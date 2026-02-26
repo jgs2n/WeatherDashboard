@@ -603,32 +603,33 @@ body {
     color: var(--text-secondary);
 }
 
+/* Forecast grid — single-row horizontal scroll, 7 days visible on desktop */
 .forecast-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
     gap: 0.8rem;
     margin-top: 1rem;
+    padding-bottom: 0.5rem;
+    align-items: stretch;
 }
 
-.forecast-card .forecast-grid {
-    grid-template-columns: repeat(7, 1fr);
+.forecast-grid::-webkit-scrollbar { height: 4px; }
+.forecast-grid::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); border-radius: 2px; }
+.forecast-grid::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 2px; }
+
+/* Desktop: 7 days fill visible area, days 8–10 scroll into view */
+.forecast-card .forecast-grid .forecast-item {
+    flex: 0 0 calc((100% - 6 * 0.8rem) / 7);
+    min-width: 0;
+    scroll-snap-align: start;
 }
 
-@media (max-width: 1400px) {
-    .forecast-card .forecast-grid {
-        grid-template-columns: repeat(4, 1fr);
-    }
-}
-
-@media (max-width: 1024px) {
-    .forecast-card .forecast-grid {
-        grid-template-columns: repeat(7, 1fr);
-    }
-}
-
-@media (max-width: 768px) {
-    .forecast-card .forecast-grid {
-        grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+/* Tablet: show 5 days */
+@media (max-width: 1100px) {
+    .forecast-card .forecast-grid .forecast-item {
+        flex: 0 0 calc((100% - 4 * 0.8rem) / 5);
     }
 }
 
@@ -692,7 +693,6 @@ body {
 .has-model-spread {
     cursor: pointer;
     position: relative;
-    border-bottom: 1px dashed rgba(255, 255, 255, 0.2);
 }
 
 .model-tooltip {
@@ -2158,10 +2158,8 @@ body {
         background: rgba(255, 255, 255, 0.15);
         border-radius: 2px;
     }
-    .forecast-item {
-        min-width: 100px;
-        max-width: 100px;
-        flex-shrink: 0;
+    .forecast-card .forecast-grid .forecast-item {
+        flex: 0 0 120px;
         padding: 0.8rem 0.5rem;
         min-height: auto;
         border-radius: 8px;
