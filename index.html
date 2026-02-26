@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!--
+    Weather Command Center
+    Version: 0.7.0
+    Last Updated: 2026-02-23
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Weather HQ">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="description" content="Weather Command Center - Multi-location weather dashboard">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Weather Command Center</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌤️</text></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+    <link rel="stylesheet" href="css/styles.css?v=0.8.4">
+    <link rel="manifest" href="pwa/manifest.json">
+</head>
+<body>
+    <div class="header">
+        <h1>WEATHER COMMAND CENTER</h1>
+        <div class="header-refresh">
+            <button class="refresh-btn" id="refreshBtn" onclick="refreshWeather()">
+                <span class="refresh-icon" id="refreshIcon">↻</span>
+            </button>
+            <span class="last-updated" id="lastUpdated"></span>
+        </div>
+        <div id="locationTabs" class="location-tabs"></div>
+        <div class="edit-mode-hint">Drag to reorder · Tap × to remove · Tap to dismiss</div>
+    </div>
+
+    <div id="weatherContainer"></div>
+
+    <!-- Alert Modal -->
+    <div class="alert-modal-overlay" id="alertModal" onclick="if(event.target===this)closeAlertModal()">
+        <div class="alert-modal">
+            <div class="alert-modal-header">
+                <h2>⚠️ Weather Alerts</h2>
+                <button class="alert-modal-close" onclick="closeAlertModal()">✕</button>
+            </div>
+            <div class="alert-modal-body" id="alertModalBody"></div>
+        </div>
+    </div>
+
+    <!-- Recent Precip Chart Modal -->
+    <div class="pc-overlay" id="precipChartOverlay" onclick="if(event.target===this)closePrecipChart()">
+        <div class="pc-modal">
+            <div id="precipChartBody"></div>
+        </div>
+    </div>
+
+    <!-- Pressure Chart Modal -->
+    <div class="pc-overlay" id="pressureChartOverlay" onclick="if(event.target===this)closePressureChart()">
+        <div class="pc-modal">
+            <div id="pressureChartBody"></div>
+        </div>
+    </div>
+
+    <!-- Forecast Day Detail Modal -->
+    <div class="forecast-detail-overlay" id="forecastDetailOverlay"
+         onclick="if(event.target===this)closeForecastDetail()">
+        <div class="forecast-detail-modal" id="forecastDetailModal">
+            <div class="forecast-detail-handle"></div>
+            <div class="forecast-detail-header">
+                <button class="forecast-detail-close" onclick="closeForecastDetail()">✕</button>
+                <span class="forecast-detail-counter" id="forecastDetailCounter">1 of 7</span>
+            </div>
+            <div class="forecast-detail-body" id="forecastDetailBody"></div>
+            <div class="forecast-detail-nav">
+                <button class="forecast-nav-btn" id="forecastPrevBtn" onclick="navigateForecastDetail(-1)">‹</button>
+                <button class="forecast-nav-btn" id="forecastNextBtn" onclick="navigateForecastDetail(1)">›</button>
+            </div>
+        </div>
+    </div>
+
+
+    <script src="src/state/store.js"></script>
+    <script src="src/utils/weatherCodes.js"></script>
+    <script src="src/utils/risk.js"></script>
+    <script src="src/utils/dom.js?v=0.6.0"></script>
+    <script src="src/utils/moon.js"></script>
+    <script src="src/utils/format.js?v=0.8.4"></script>
+    <script src="src/services/geocode.js"></script>
+    <script src="src/services/openMeteo.js"></script>
+    <script src="src/services/nws.js"></script>
+    <script src="src/services/recentPrecip.js"></script>
+    <script src="src/ui/locationPicker.js"></script>
+    <script src="src/ui/pressureChart.js"></script>
+    <script src="src/ui/precipChart.js"></script>
+    <script src="src/ui/forecastModal.js"></script>
+    <script src="src/ui/hourly.js"></script>
+    <script src="src/ui/share.js"></script>
+    <script src="src/ui/renderDashboard.js?v=0.9.4"></script>
+    <script src="src/ui/tabDrag.js"></script>
+    <script src="src/main.js"></script>
+</body>
+</html>
