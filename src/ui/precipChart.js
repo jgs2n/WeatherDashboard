@@ -23,6 +23,16 @@ function setPrecipWindow(w) {
     _rrWindow = w;
     localStorage.setItem('precipWindow', w);
     _rrRender();
+    // Sync the current-conditions card spark tile to the new window
+    const tile = document.querySelector('.precip-spark-tile');
+    if (tile && cachedRecentPrecip) {
+        const sliced = sliceRecentPrecip(cachedRecentPrecip, w);
+        if (sliced) {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = renderPrecipSpark(sliced);
+            tile.replaceWith(tmp.firstElementChild);
+        }
+    }
 }
 
 // ─── Main renderer ────────────────────────────────────────────────────────────
