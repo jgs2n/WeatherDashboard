@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About — Weather HQ</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0e1a;
+            --bg-card: #131826;
+            --accent-primary: #00d4ff;
+            --accent-secondary: #ff6b9d;
+            --text-primary: #e8edf5;
+            --text-secondary: #8b95a8;
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            background-image:
+                radial-gradient(circle at 20% 30%, rgba(0, 212, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(255, 107, 157, 0.06) 0%, transparent 50%);
+            padding: 2.5rem 2rem 4rem;
+        }
+
+        .about-header {
+            margin-bottom: 3rem;
+        }
+
+        .about-header h1 {
+            font-family: 'Bebas Neue', cursive;
+            font-size: 3rem;
+            letter-spacing: 0.3rem;
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.4rem;
+        }
+
+        .about-back {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            letter-spacing: 0.08rem;
+            transition: color 0.15s;
+        }
+
+        .about-back:hover { color: var(--accent-primary); }
+
+        .about-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem 3rem;
+            max-width: 960px;
+        }
+
+        .about-section--philosophy {
+            grid-column: 1 / -1;
+        }
+
+        .about-section {
+            border-top: 1px solid var(--border);
+            padding-top: 1.25rem;
+        }
+
+        .about-heading {
+            font-family: 'Bebas Neue', cursive;
+            font-size: 1.1rem;
+            letter-spacing: 0.2rem;
+            color: var(--accent-primary);
+            margin-bottom: 0.75rem;
+        }
+
+        .about-text {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            line-height: 1.8;
+            max-width: 72ch;
+        }
+
+        /* Sources */
+        .about-sources {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .about-sources li {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+
+        .about-source-name {
+            font-size: 0.75rem;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .about-source-desc {
+            font-size: 0.67rem;
+            color: var(--text-secondary);
+            line-height: 1.55;
+        }
+
+        .about-source-link {
+            font-size: 0.67rem;
+            color: var(--accent-primary);
+            text-decoration: none;
+            opacity: 0.7;
+            transition: opacity 0.15s;
+        }
+
+        .about-source-link:hover { opacity: 1; }
+
+        /* Architecture */
+        .about-arch {
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+        }
+
+        .about-arch-item {
+            display: grid;
+            grid-template-columns: 5.5rem 1fr;
+            gap: 0.5rem;
+            font-size: 0.7rem;
+            align-items: baseline;
+        }
+
+        .about-arch-label {
+            color: var(--accent-primary);
+            opacity: 0.7;
+            text-transform: uppercase;
+            letter-spacing: 0.06rem;
+            font-size: 0.65rem;
+        }
+
+        .about-arch-val {
+            color: var(--text-secondary);
+            line-height: 1.55;
+        }
+
+        /* Credit */
+        .about-credit {
+            margin-top: 3rem;
+            padding-top: 1.25rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.67rem;
+            color: var(--text-secondary);
+            opacity: 0.5;
+            letter-spacing: 0.12rem;
+        }
+
+        @media (max-width: 600px) {
+            body { padding: 1.5rem 1rem 3rem; }
+            .about-header h1 { font-size: 2.2rem; }
+            .about-grid { grid-template-columns: 1fr; }
+            .about-section--philosophy { grid-column: auto; }
+            .about-arch-item { grid-template-columns: 4.5rem 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <header class="about-header">
+        <h1>Weather HQ</h1>
+        <a class="about-back" href="index.html">← Back to dashboard</a>
+    </header>
+
+    <div class="about-grid">
+
+        <section class="about-section about-section--philosophy">
+            <h2 class="about-heading">Philosophy</h2>
+            <p class="about-text">Weather HQ is built for people who want real weather data without the noise. The goal is a fast, honest dashboard: no ads, no tracking, no unnecessary complexity. Data is fetched fresh on every load from open, public APIs and never routed through a backend. It runs as a PWA so it installs on your phone and works offline with the last cached fetch — the right tool for a morning glance before you head out the door.</p>
+        </section>
+
+        <section class="about-section about-section--philosophy">
+            <h2 class="about-heading">Forecast Models</h2>
+            <p class="about-text">The 10-day forecast runs two independent global models in parallel: the American GFS (NOAA's Global Forecast System) and ECMWF IFS (the European Centre's Integrated Forecast System, widely regarded as the gold standard for medium-range prediction). Both are fetched fresh via Open-Meteo on every load. When the two models agree on a high or low within 3°F, the dashboard shows a single temperature — the most likely outcome. When they diverge by more than 3°F, the forecast card shows a range instead, for example 67–72°, because showing false precision would be less honest than showing the disagreement. This matters most beyond day 5, where small differences in initial conditions can compound into larger divergence. Tapping a temperature range reveals the individual model readings so you can see which model is the outlier and weigh them yourself.</p>
+        </section>
+
+        <section class="about-section">
+            <h2 class="about-heading">Data Sources</h2>
+            <ul class="about-sources">
+                <li>
+                    <span class="about-source-name">Open-Meteo</span>
+                    <span class="about-source-desc">Forecast, current conditions, and multi-model comparison — free, open-source NWP API</span>
+                    <a class="about-source-link" href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo.com ↗</a>
+                </li>
+                <li>
+                    <span class="about-source-name">NWS / NOAA</span>
+                    <span class="about-source-desc">Official US forecasts and active weather alerts (US locations only)</span>
+                    <a class="about-source-link" href="https://api.weather.gov" target="_blank" rel="noopener">api.weather.gov ↗</a>
+                </li>
+                <li>
+                    <span class="about-source-name">Meteostat</span>
+                    <span class="about-source-desc">Observed station data for recent precipitation history</span>
+                    <a class="about-source-link" href="https://meteostat.net" target="_blank" rel="noopener">meteostat.net ↗</a>
+                </li>
+                <li>
+                    <span class="about-source-name">Open-Meteo AQI</span>
+                    <span class="about-source-desc">Air quality index derived from the European CAMS forecast model</span>
+                    <a class="about-source-link" href="https://open-meteo.com/en/docs/air-quality-api" target="_blank" rel="noopener">open-meteo.com/air-quality ↗</a>
+                </li>
+            </ul>
+        </section>
+
+        <section class="about-section">
+            <h2 class="about-heading">Architecture</h2>
+            <div class="about-arch">
+                <div class="about-arch-item">
+                    <span class="about-arch-label">Stack</span>
+                    <span class="about-arch-val">Vanilla JS · ES modules · no frameworks · no build step</span>
+                </div>
+                <div class="about-arch-item">
+                    <span class="about-arch-label">Structure</span>
+                    <span class="about-arch-val">services/ fetch + normalize · ui/ render DOM · utils/ pure helpers · state/ single store</span>
+                </div>
+                <div class="about-arch-item">
+                    <span class="about-arch-label">PWA</span>
+                    <span class="about-arch-val">Versioned service worker cache · installable on iOS &amp; Android · offline serves last fetch</span>
+                </div>
+                <div class="about-arch-item">
+                    <span class="about-arch-label">Data flow</span>
+                    <span class="about-arch-val">API → service normalizes → main.js orchestrates → renderer writes DOM once per refresh</span>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <div class="about-credit">Built by John · 2026</div>
+</body>
+</html>

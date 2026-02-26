@@ -557,7 +557,7 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
         </div>
 
         <div class="timestamp">
-            Location: ${location.name}, ${location.country} | <span style="opacity: 0.6;">v${APP_VERSION}</span>
+            Location: ${location.name}, ${location.country} | <span style="opacity: 0.6;">v${APP_VERSION}</span> | <a href="about.html" target="_blank" rel="noopener" class="timestamp-about-link">About</a>
         </div>
     `;
 

@@ -1401,6 +1401,15 @@ body {
     opacity: 0.7;
 }
 
+.timestamp-about-link {
+    color: var(--accent-primary);
+    text-decoration: none;
+    opacity: 0.75;
+    transition: opacity 0.15s;
+}
+
+.timestamp-about-link:hover { opacity: 1; }
+
 @keyframes fadeInDown {
     from {
         opacity: 0;
@@ -2656,5 +2665,155 @@ body {
     /* Disable callout on long-press for tabs */
     .location-tab {
         -webkit-touch-callout: none;
+    }
+}
+
+/* ===== ABOUT FOOTER ===== */
+.about-footer {
+    margin-top: 3rem;
+    border-top: 1px solid var(--border);
+}
+
+.about-toggle {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.15rem;
+    padding: 0.75rem 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: color 0.2s;
+    width: 100%;
+}
+
+.about-toggle:hover { color: var(--text-primary); }
+
+.about-toggle-icon {
+    display: inline-block;
+    transition: transform 0.25s ease;
+    font-size: 0.8rem;
+}
+
+.about-toggle[aria-expanded="true"] .about-toggle-icon {
+    transform: rotate(180deg);
+}
+
+.about-body {
+    padding-bottom: 2.5rem;
+}
+
+.about-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem 2.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.about-section--philosophy {
+    grid-column: 1 / -1;
+}
+
+.about-heading {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1rem;
+    letter-spacing: 0.15rem;
+    color: var(--accent-primary);
+    margin-bottom: 0.6rem;
+}
+
+.about-text {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    line-height: 1.75;
+    max-width: 72ch;
+}
+
+/* Sources */
+.about-sources {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.about-sources li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.about-source-name {
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.about-source-desc {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.about-source-link {
+    font-size: 0.65rem;
+    color: var(--accent-primary);
+    text-decoration: none;
+    opacity: 0.65;
+    transition: opacity 0.15s;
+}
+
+.about-source-link:hover { opacity: 1; }
+
+/* Architecture */
+.about-arch {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.about-arch-item {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: 0.5rem;
+    font-size: 0.68rem;
+    align-items: baseline;
+}
+
+.about-arch-label {
+    color: var(--accent-primary);
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.05rem;
+}
+
+.about-arch-val {
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+/* Credit */
+.about-credit {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    opacity: 0.45;
+    text-align: center;
+    letter-spacing: 0.12rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+    .about-grid {
+        grid-template-columns: 1fr;
+    }
+    .about-section--philosophy {
+        grid-column: auto;
+    }
+    .about-arch-item {
+        grid-template-columns: 4.5rem 1fr;
     }
 }
