@@ -27,13 +27,14 @@
     <div class="header">
         <h1>WEATHER COMMAND CENTER</h1>
         <div class="header-refresh">
+            <div id="headerActions" class="header-actions"></div>
             <button class="refresh-btn" id="refreshBtn" onclick="refreshWeather()">
                 <span class="refresh-icon" id="refreshIcon">↻</span>
             </button>
             <span class="last-updated" id="lastUpdated"></span>
         </div>
         <div id="locationTabs" class="location-tabs"></div>
-        <div class="edit-mode-hint">Drag to reorder · Tap × to remove · Tap to dismiss</div>
+        <div class="edit-mode-hint">Drag to reorder · Tap × to remove · Tap DONE to exit</div>
     </div>
 
     <div id="weatherContainer"></div>
@@ -97,8 +98,8 @@
     <script src="src/ui/forecastModal.js"></script>
     <script src="src/ui/hourly.js"></script>
     <script src="src/ui/share.js"></script>
-    <script src="src/ui/renderDashboard.js?v=0.9.5"></script>
-    <script src="src/ui/tabDrag.js"></script>
+    <script src="src/ui/renderDashboard.js?v=1.2.0"></script>
+    <script src="src/ui/tabDrag.js?v=1.1.7"></script>
     <script src="src/main.js"></script>
 </body>
 </html>

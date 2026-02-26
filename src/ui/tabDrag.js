@@ -24,6 +24,13 @@ let touchDragState = {
     dragStartedFromEditMode: false
 };
 
+function _updateEditBtn() {
+    const btn = document.getElementById('editTabBtn');
+    if (!btn) return;
+    btn.textContent = touchDragState.editMode ? 'DONE' : '✏️ EDIT';
+    btn.classList.toggle('edit-tab--active', touchDragState.editMode);
+}
+
 function exitEditMode() {
     document.getElementById('locationTabs').classList.remove('edit-mode');
     touchDragState.editMode = false;
@@ -32,10 +39,42 @@ function exitEditMode() {
         document.removeEventListener('click', touchDragState.editModeClickHandler);
         touchDragState.editModeClickHandler = null;
     }
+    _updateEditBtn();
+}
+
+function enterEditMode() {
+    if (navigator.vibrate) navigator.vibrate(50);
+    touchDragState.editMode = true;
+    touchDragState.prevented = true;
+    document.getElementById('locationTabs').classList.add('edit-mode');
+    _updateEditBtn();
+
+    clearTimeout(touchDragState.editModeTimer);
+    touchDragState.editModeTimer = setTimeout(exitEditMode, 12000);
+
+    setTimeout(() => {
+        const handler = function(evt) {
+            if (!evt.target.closest('.remove-btn') && !evt.target.closest('#editTabBtn')) {
+                exitEditMode();
+                document.removeEventListener('click', handler);
+                touchDragState.editModeClickHandler = null;
+            }
+        };
+        touchDragState.editModeClickHandler = handler;
+        document.addEventListener('click', handler);
+    }, 300);
+}
+
+function toggleEditMode() {
+    if (touchDragState.editMode) {
+        exitEditMode();
+    } else {
+        enterEditMode();
+    }
 }
 
 function initTouchReorder() {
-    const tabs = document.querySelectorAll('.location-tab:not(.add-tab)');
+    const tabs = document.querySelectorAll('.location-tab:not(.add-tab):not(.edit-tab)');
     tabs.forEach(tab => {
         tab.addEventListener('touchstart', onTouchStart, { passive: false });
         tab.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -57,30 +96,16 @@ function onTouchStart(e) {
     touchDragState.longPressIndex = index;
     touchDragState.longPressTouch = { clientX: touch.clientX, clientY: touch.clientY };
 
-    // Long-press timer (2000ms) → enter edit mode
+    // If already in edit mode, suppress native callout and let onTouchMove start drag immediately
+    if (touchDragState.editMode) {
+        e.preventDefault();
+        return;
+    }
+
+    // Long-press timer — reduce to 600ms so it beats iOS callout
     touchDragState.timer = setTimeout(() => {
-        if (navigator.vibrate) navigator.vibrate(50);
-        touchDragState.editMode = true;
-        touchDragState.prevented = true;
-        document.getElementById('locationTabs').classList.add('edit-mode');
-
-        // Auto-exit after 5 seconds
-        clearTimeout(touchDragState.editModeTimer);
-        touchDragState.editModeTimer = setTimeout(exitEditMode, 5000);
-
-        // Exit on outside tap (delayed to avoid catching this touch)
-        setTimeout(() => {
-            const handler = function(evt) {
-                if (!evt.target.closest('.remove-btn') && !evt.target.closest('.remove-btn.confirm')) {
-                    exitEditMode();
-                    document.removeEventListener('click', handler);
-                    touchDragState.editModeClickHandler = null;
-                }
-            };
-            touchDragState.editModeClickHandler = handler;
-            document.addEventListener('click', handler);
-        }, 300);
-    }, 2000);
+        enterEditMode();
+    }, 600);
 }
 
 function onTouchMove(e) {
@@ -236,23 +261,7 @@ function completeTouchDrag() {
 
     // Re-enter edit mode so the user can keep sorting/deleting without re-long-pressing
     if (wasEditing) {
-        document.getElementById('locationTabs').classList.add('edit-mode');
-        touchDragState.editMode = true;
-        clearTimeout(touchDragState.editModeTimer);
-        touchDragState.editModeTimer = setTimeout(exitEditMode, 5000);
-
-        // Re-register tap-outside handler
-        setTimeout(() => {
-            const handler = function(evt) {
-                if (!evt.target.closest('.remove-btn') && !evt.target.closest('.remove-btn.confirm')) {
-                    exitEditMode();
-                    document.removeEventListener('click', handler);
-                    touchDragState.editModeClickHandler = null;
-                }
-            };
-            touchDragState.editModeClickHandler = handler;
-            document.addEventListener('click', handler);
-        }, 300);
+        enterEditMode();
     }
 }
 

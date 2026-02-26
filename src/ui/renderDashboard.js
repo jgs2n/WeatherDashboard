@@ -238,7 +238,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                 <div class="detail-item-paired">
                     <div class="detail-item">
                         <div class="detail-label">Sunrise</div>
-                        <div class="detail-value">${todaySunrise || '—'}</div>
+                        <div class="detail-value"><span style="font-size:20px">🌅</span> ${todaySunrise || '—'}</div>
                     </div>
                     <div class="detail-item">
                         <div class="detail-label">Moonrise</div>
@@ -249,7 +249,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                 <div class="detail-item-paired">
                     <div class="detail-item">
                         <div class="detail-label">Sunset</div>
-                        <div class="detail-value">${todaySunset || '—'}</div>
+                        <div class="detail-value"><span style="font-size:20px">🌇</span> ${todaySunset || '—'}</div>
                     </div>
                     <div class="detail-item">
                         <div class="detail-label">Moonset</div>

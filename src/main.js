@@ -24,14 +24,14 @@ function renderTabs() {
         </div>
     `}).join('');
 
-    const addButton = `
-        <div class="location-tab add-tab" onclick="showAddLocationPrompt()">
-            <span style="font-size: 1.2rem;">+</span>
-            Add Location
-        </div>
-    `;
+    const addButton = `<div class="header-btn add-btn" onclick="showAddLocationPrompt()">+ ADD</div>`;
 
-    tabsContainer.innerHTML = `<div class="location-tabs-inner">${locationTabs}${addButton}</div>`;
+    const editButton = savedLocations.length > 1
+        ? `<div class="header-btn edit-btn ${touchDragState.editMode ? 'edit-tab--active' : ''}" id="editTabBtn" onclick="toggleEditMode()">${touchDragState.editMode ? 'DONE' : '✏️ EDIT'}</div>`
+        : '';
+
+    document.getElementById('headerActions').innerHTML = addButton + editButton;
+    tabsContainer.innerHTML = `<div class="location-tabs-inner">${locationTabs}</div>`;
 
     // Re-attach long-press listeners on touch devices
     if (isTouchDevice) {
@@ -145,35 +145,12 @@ function switchLocation(index) {
     fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
 }
 
-// Confirm-delete: first click shows confirm state, second click deletes
-let confirmTimer = null;
-
 function confirmRemove(btn, index) {
-    // Already in confirm state — do the delete
-    if (btn.classList.contains('confirm')) {
-        clearTimeout(confirmTimer);
+    const loc = savedLocations[index];
+    const name = loc ? (loc.displayName || loc.name) : 'this location';
+    if (window.confirm(`Remove ${name}?`)) {
         removeLocation(index);
-        return;
     }
-
-    // Clear any other confirm buttons
-    document.querySelectorAll('.remove-btn.confirm').forEach(b => {
-        b.classList.remove('confirm');
-        b.textContent = '×';
-    });
-    clearTimeout(confirmTimer);
-
-    // Enter confirm state
-    btn.classList.add('confirm');
-    btn.textContent = '✕';
-
-    // Auto-revert after 3 seconds
-    confirmTimer = setTimeout(() => {
-        if (btn.classList.contains('confirm')) {
-            btn.classList.remove('confirm');
-            btn.textContent = '×';
-        }
-    }, 3000);
 }
 
 function removeLocation(index) {
