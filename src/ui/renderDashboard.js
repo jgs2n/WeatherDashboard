@@ -234,40 +234,38 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                     <div class="detail-value">${current.uv_index.toFixed(1)}</div>
                 </div>
                 ${aqiHTML}
-                <!-- Row 4: sunrise / sunset -->
-                ${(todaySunrise || todaySunset) ? `
+                <!-- Row 4: sunrise / moonrise -->
                 <div class="detail-item-paired">
                     <div class="detail-item">
                         <div class="detail-label">Sunrise</div>
                         <div class="detail-value">${todaySunrise || '—'}</div>
                     </div>
                     <div class="detail-item">
+                        <div class="detail-label">Moonrise</div>
+                        <div class="detail-value">${moonTimes.rise || '—'}</div>
+                    </div>
+                </div>
+                <!-- Row 5: sunset / moonset -->
+                <div class="detail-item-paired">
+                    <div class="detail-item">
                         <div class="detail-label">Sunset</div>
                         <div class="detail-value">${todaySunset || '—'}</div>
                     </div>
-                </div>` : ''}
-                <!-- Row 6: moonrise / moonset -->
-                ${moonTimes.rise ? `
-                <div class="detail-item-paired">
-                    <div class="detail-item">
-                        <div class="detail-label">Moonrise</div>
-                        <div class="detail-value">${moonTimes.rise}</div>
-                    </div>
                     <div class="detail-item">
                         <div class="detail-label">Moonset</div>
-                        <div class="detail-value">${moonTimes.set}</div>
+                        <div class="detail-value">${moonTimes.set || '—'}</div>
                     </div>
-                </div>` : ''}
-                <!-- Row 7: moon phase / fire risk -->
+                </div>
+                <!-- Row 6: fire risk / moon phase -->
                 <div class="detail-item-paired">
+                    <div class="detail-item">
+                        <div class="detail-label">Fire Risk</div>
+                        <div class="detail-value" style="color: ${fireRisk.color}">${fireRisk.icon} ${fireRisk.level}</div>
+                    </div>
                     <div class="detail-item">
                         <div class="detail-label">Moon</div>
                         <div class="detail-value">${moon.icon} ${moon.direction ? `<span class="moon-direction ${dirClass}">${moon.direction}</span> ` : ''}${moon.name}</div>
                         <div class="detail-sub">${moon.illumination}% · Day ${moon.lunarAge} of 29.5</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">Fire Risk</div>
-                        <div class="detail-value" style="color: ${fireRisk.color}">${fireRisk.icon} ${fireRisk.level}</div>
                     </div>
                 </div>
                 <!-- Row 8: recent precip (full width) -->

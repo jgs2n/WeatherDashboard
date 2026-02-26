@@ -2577,7 +2577,7 @@ body {
 .precip-spark-svg {
     width: 100%;
     display: block;
-    max-height: 72px;
+    max-height: 90px;
 }
 
 /* ===== RECENT PRECIP TILE (legacy — kept for precipChart modal context) ===== */

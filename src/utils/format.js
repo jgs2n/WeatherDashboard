@@ -105,7 +105,7 @@ function renderPrecipSpark(rp) {
     }
 
     // SVG layout
-    const W = 500, H = 60, PL = 6, PR = 6, PT = 6, PB = 20;
+    const W = 500, H = 77, PL = 6, PR = 6, PT = 6, PB = 20;
     const chartW = W - PL - PR, chartH = H - PT - PB;
     const baseline = PT + chartH;
 
