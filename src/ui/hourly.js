@@ -75,7 +75,13 @@ function toggleHourlyDetail(index) {
             </div>
             <div class="hourly-detail-item">
                 <div class="hourly-detail-label">Precipitation</div>
-                <div class="hourly-detail-value">${(isNow ? cur.precipitation : hourly.precipitation[index]).toFixed(2)} in</div>
+                <div class="hourly-detail-value">${(() => {
+                    const amt = (isNow ? cur.precipitation : hourly.precipitation[index]) || 0;
+                    const snow = hourly.snowfall[index] || 0;
+                    const intensity = getPrecipIntensity(amt, snow);
+                    const label = intensity.label ? ` <span class="precip-intensity-label">\u00b7 ${intensity.label}</span>` : '';
+                    return `${amt.toFixed(2)} in${label}`;
+                })()}</div>
             </div>
             <div class="hourly-detail-item">
                 <div class="hourly-detail-label">Cloud Cover</div>

@@ -1,3 +1,17 @@
+function getPrecipIntensity(precipIn, snowfallIn) {
+    const isSnow = (snowfallIn || 0) > 0;
+    const amount = isSnow ? (snowfallIn || 0) : (precipIn || 0);
+    if (amount === 0) return { type: 'none', level: null, label: '' };
+    const type = isSnow ? 'snow' : 'rain';
+    let level;
+    if (isSnow) {
+        level = amount < 0.2 ? 'light' : amount < 0.5 ? 'moderate' : 'heavy';
+    } else {
+        level = amount < 0.1 ? 'light' : amount < 0.3 ? 'moderate' : 'heavy';
+    }
+    return { type, level, label: level.charAt(0).toUpperCase() + level.slice(1) };
+}
+
 function getAQICategory(aqi) {
     if (aqi <= 50) return { level: 'Good', color: '#00e400', icon: '✓' };
     if (aqi <= 100) return { level: 'Moderate', color: '#ffff00', icon: '◐' };

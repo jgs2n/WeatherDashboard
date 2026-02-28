@@ -668,6 +668,11 @@ body {
     color: var(--accent-primary);
 }
 
+.time-sunrise  { color: #FFF176; }
+.time-sunset   { color: #E8B800; }
+.time-moonrise { color: #90C8F0; }
+.time-moonset  { color: #6888A8; }
+
 .moon-details {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.7rem;
@@ -1664,6 +1669,18 @@ body {
 
 .hourly-precip.has-precip {
     color: #4fc3f7;
+}
+
+.hourly-precip.precip-rain-light   { color: #4fc3f7; }
+.hourly-precip.precip-rain-moderate{ color: #1e88e5; }
+.hourly-precip.precip-rain-heavy   { color: #7c4dff; }
+.hourly-precip.precip-snow-light   { color: #b3e5fc; }
+.hourly-precip.precip-snow-moderate{ color: #81d4fa; }
+.hourly-precip.precip-snow-heavy   { color: #ce93d8; }
+
+.precip-intensity-label {
+    opacity: 0.75;
+    font-weight: 400;
 }
 
 .hourly-wind-mini {

@@ -238,22 +238,22 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                 <div class="detail-item-paired">
                     <div class="detail-item">
                         <div class="detail-label">Sunrise</div>
-                        <div class="detail-value"><span style="font-size:20px">🌅</span> ${todaySunrise || '—'}</div>
+                        <div class="detail-value"><span class="time-sunrise">${todaySunrise || '—'}</span></div>
                     </div>
                     <div class="detail-item">
                         <div class="detail-label">Moonrise</div>
-                        <div class="detail-value">${moonTimes.rise || '—'}</div>
+                        <div class="detail-value"><span class="time-moonrise">${moonTimes.rise || '—'}</span></div>
                     </div>
                 </div>
                 <!-- Row 5: sunset / moonset -->
                 <div class="detail-item-paired">
                     <div class="detail-item">
                         <div class="detail-label">Sunset</div>
-                        <div class="detail-value"><span style="font-size:20px">🌇</span> ${todaySunset || '—'}</div>
+                        <div class="detail-value"><span class="time-sunset">${todaySunset || '—'}</span></div>
                     </div>
                     <div class="detail-item">
                         <div class="detail-label">Moonset</div>
-                        <div class="detail-value">${moonTimes.set || '—'}</div>
+                        <div class="detail-value"><span class="time-moonset">${moonTimes.set || '—'}</span></div>
                     </div>
                 </div>
                 <!-- Row 6: fire risk / moon phase -->
@@ -489,6 +489,9 @@ function renderHourlyStrip(hourly, current, locLabel) {
             : (WEATHER_CODES[hourly.weather_code[i]] || WEATHER_CODES[0]);
         const temp = isNow && current ? Math.round(current.temperature_2m) : Math.round(hourly.temperature_2m[i]);
         const precip = hourly.precipitation_probability[i] || 0;  // always from hourly
+        const precipAmt = hourly.precipitation[i] || 0;
+        const snowAmt = hourly.snowfall[i] || 0;
+        const precipIntensity = getPrecipIntensity(precipAmt, snowAmt);
         const wind = isNow && current ? Math.round(current.wind_speed_10m) : Math.round(hourly.wind_speed_10m[i]);
         const gusts = isNow && current ? Math.round(current.wind_gusts_10m) : Math.round(hourly.wind_gusts_10m[i]);
         const windDir = isNow && current ? current.wind_direction_10m : hourly.wind_direction_10m[i];
@@ -508,7 +511,7 @@ function renderHourlyStrip(hourly, current, locLabel) {
                 <span class="hourly-time">${timeLabel}</span>
                 <span class="hourly-icon">${hourCode.icon}</span>
                 <span class="hourly-temp">${temp}°</span>
-                ${precip > 0 ? `<span class="hourly-precip has-precip">💧${precip}%</span>` : `<span class="hourly-precip">&nbsp;</span>`}
+                ${precip > 0 ? `<span class="hourly-precip has-precip${precipIntensity.type !== 'none' ? ` precip-${precipIntensity.type}-${precipIntensity.level}` : ''}">${precipIntensity.type === 'snow' ? '❄️' : '💧'}${precip}%</span>` : `<span class="hourly-precip">&nbsp;</span>`}
                 ${renderWindCompass(windDir, wind, gusts, true)}
             </div>
         `);
