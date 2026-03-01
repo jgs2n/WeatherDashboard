@@ -65,6 +65,7 @@ function updateRefreshTime() {
 
 // Refresh weather data
 function refreshWeather() {
+    if (_pendingUpdate) { window.location.reload(); return; }
     if (!activeLocation) return;
 
     const btn = document.getElementById('refreshBtn');
@@ -459,11 +460,20 @@ function generateAppIcon() {
 generateAppIcon();
 
 // Register service worker for PWA + offline caching
+let _pendingUpdate = false;
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').then(reg => {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
         console.log('Service Worker registered:', reg.scope);
     }).catch(err => {
         console.log('SW registration (expected if not served over HTTPS):', err.message);
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController) {
+            _pendingUpdate = true;
+            const btn = document.getElementById('refreshBtn');
+            if (btn) btn.classList.add('update-available');
+        }
     });
 }
 
