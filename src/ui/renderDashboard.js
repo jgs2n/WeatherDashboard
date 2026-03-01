@@ -96,6 +96,31 @@ function renderRadarSection(location) {
 
 // ─── Sub-renderers ───────────────────────────────────────────────────────────
 
+// Swap the AQI placeholder with live data after a deferred retry
+function updateAQITile(airQuality) {
+    const placeholder = document.getElementById('aqi-placeholder');
+    if (!placeholder) return;
+    if (!airQuality || !airQuality.current || !airQuality.current.us_aqi) {
+        placeholder.querySelector('.detail-label:last-child').textContent = 'Unavailable';
+        return;
+    }
+    const aqiCategory = getAQICategory(airQuality.current.us_aqi);
+    cachedAQI = { value: Math.round(airQuality.current.us_aqi), ...aqiCategory };
+    cachedAQIHourly = (airQuality.hourly && airQuality.hourly.us_aqi) ? airQuality.hourly : null;
+    const tile = document.createElement('div');
+    tile.className = 'detail-item aqi-btn';
+    tile.onclick = () => openAQIChart(cachedAQIHourly);
+    tile.title = 'View air quality history';
+    tile.innerHTML = `
+        <div class="detail-label">Air Quality</div>
+        <div class="detail-value" style="color: ${aqiCategory.color}">
+            ${aqiCategory.icon} ${Math.round(airQuality.current.us_aqi)}
+        </div>
+        <div class="detail-label" style="margin-top: 0.2rem; font-size: 0.65rem;">${aqiCategory.level}</div>
+    `;
+    placeholder.replaceWith(tile);
+}
+
 // Current conditions card — returns HTML string, writes cachedAlerts, cachedRecentPrecip
 function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip) {
     const current = openMeteo.current;
@@ -114,7 +139,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
         cachedAQI = { value: Math.round(airQuality.current.us_aqi), ...aqiCategory };
         cachedAQIHourly = (airQuality.hourly && airQuality.hourly.us_aqi) ? airQuality.hourly : null;
         const aqiBtnClass = 'detail-item aqi-btn';
-        const aqiClick = ' onclick="openAQIChart()" title="View air quality history"';
+        const aqiClick = ` onclick="openAQIChart(cachedAQIHourly)" title="View air quality history"`;
         aqiHTML = `
             <div class="${aqiBtnClass}"${aqiClick}>
                 <div class="detail-label">Air Quality</div>
@@ -122,6 +147,14 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                     ${aqiCategory.icon} ${Math.round(airQuality.current.us_aqi)}
                 </div>
                 <div class="detail-label" style="margin-top: 0.2rem; font-size: 0.65rem;">${aqiCategory.level}</div>
+            </div>
+        `;
+    } else {
+        aqiHTML = `
+            <div class="detail-item" id="aqi-placeholder">
+                <div class="detail-label">Air Quality</div>
+                <div class="detail-value" style="color: rgba(255,255,255,0.3)">—</div>
+                <div class="detail-label" style="margin-top: 0.2rem; font-size: 0.65rem; color: rgba(255,255,255,0.3)">Loading…</div>
             </div>
         `;
     }

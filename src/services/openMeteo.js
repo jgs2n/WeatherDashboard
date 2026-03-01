@@ -14,9 +14,18 @@ async function fetchAirQuality(lat, lon) {
     try {
         const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,pm10,pm2_5&hourly=us_aqi&past_days=3&forecast_days=7&timezone=auto`;
         const response = await fetch(url);
-        return await response.json();
+        if (!response.ok) {
+            console.warn(`[AQI] API returned HTTP ${response.status}`);
+            return null;
+        }
+        const data = await response.json();
+        if (data.error) {
+            console.warn('[AQI] API returned error:', data.reason || data.error);
+            return null;
+        }
+        return data;
     } catch (error) {
-        console.error('Air quality fetch error:', error);
+        console.warn('[AQI] fetch failed:', error.message);
         return null;
     }
 }

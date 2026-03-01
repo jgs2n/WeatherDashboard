@@ -315,6 +315,16 @@ async function fetchWeatherData() {
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC');
         renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData);
+
+        // Deferred AQI retry — if the initial fetch failed, try once more after 2s
+        if (!airQualityData) {
+            setTimeout(async () => {
+                try {
+                    const retryData = await fetchAirQuality(location.lat, location.lon);
+                    if (retryData) updateAQITile(retryData);
+                } catch (_) { /* already logged by fetchAirQuality */ }
+            }, 2000);
+        }
     } catch (error) {
         // If user cancelled location picker, restore previous view
         if (error.message === 'Location selection cancelled') {
@@ -341,6 +351,15 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC');
         renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData);
+
+        if (!airQualityData) {
+            setTimeout(async () => {
+                try {
+                    const retryData = await fetchAirQuality(lat, lon);
+                    if (retryData) updateAQITile(retryData);
+                } catch (_) { /* already logged by fetchAirQuality */ }
+            }, 2000);
+        }
     } catch (error) {
         container.innerHTML = `<div class="card"><div class="alert-title">Error</div><p>${error.message}</p></div>`;
     }
