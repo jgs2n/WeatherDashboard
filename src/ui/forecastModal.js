@@ -39,29 +39,27 @@ function renderForecastDetailDay(index) {
         </div>` : '';
 
     document.getElementById('forecastDetailBody').innerHTML = `
-        <div class="fd-day-name">${d.fullDayName}</div>
-        <div class="fd-date">${d.dateDisplay}</div>
-        <div class="fd-icon">${d.icon}</div>
-        <div class="fd-condition">${d.desc}</div>
-        <div class="fd-temps">
+        <div class="fd-header-row">
+            <span class="fd-day-name">${d.fullDayName}</span>
+            <span class="fd-date">${d.dateDisplay}</span>
+        </div>
+        <div class="fd-icon-row">
+            <span class="fd-icon">${d.icon}</span>
+            <span class="fd-condition">${d.desc}</span>
+        </div>
+        <div class="fd-temps${d.hasSpread ? ' has-model-spread' : ''}"${d.hasSpread ? ` onclick="showModelTooltip(event, '${d.tooltipData}')"` : ''}>
             <span class="fd-high">${d.highDisplay}</span>
             <span class="fd-divider">/</span>
             <span class="fd-low">${d.lowDisplay}</span>
         </div>
         <div class="fd-grid">
-            ${d.precipProb > 0 ? `<div class="fd-stat"><div class="fd-stat-label">Precip</div><div class="fd-stat-value">💧 ${d.precipProb}%${d.precipAmount > 0 ? ` · ${d.precipAmount.toFixed(1)}″` : ''}</div></div>` : ''}
-            ${d.snowfall > 0 ? `<div class="fd-stat"><div class="fd-stat-label">Snow</div><div class="fd-stat-value">❄️ ${(d.snowfall / 2.54).toFixed(1)}″</div></div>` : ''}
-            <div class="fd-stat fd-stat-wind">${renderWindCompass(d.windDegrees, d.windSpeed, d.gustSpeed)}</div>
-            ${(d.uvMax != null || cachedAQI) ? `
+            ${(d.precipProb > 0 || cachedAQI) ? `
             <div class="fd-stat-paired">
-                ${d.uvMax != null ? `<div class="fd-stat"><div class="fd-stat-label">UV Index</div><div class="fd-stat-value">${d.uvMax}</div></div>` : '<div></div>'}
+                ${d.precipProb > 0 ? `<div class="fd-stat"><div class="fd-stat-label">Precip</div><div class="fd-stat-value">💧 ${d.precipProb}%${d.precipAmount > 0 ? ` · ${d.precipAmount.toFixed(1)}″` : ''}</div></div>` : '<div></div>'}
                 ${cachedAQI ? `<div class="fd-stat"><div class="fd-stat-label">Air Quality</div><div class="fd-stat-value" style="color:${cachedAQI.color}">${cachedAQI.icon} ${cachedAQI.value}</div><div class="fd-stat-label" style="margin-top:0.2rem">${cachedAQI.level}</div></div>` : '<div></div>'}
             </div>` : ''}
-            ${(d.sunrise || d.sunset) ? `
-            <div class="fd-stat-paired">
-                ${d.sunrise ? `<div class="fd-stat"><div class="fd-stat-label">Sunrise</div><div class="fd-stat-value">🌅 ${fmtTime(d.sunrise)}</div></div>` : '<div></div>'}
-                ${d.sunset ? `<div class="fd-stat"><div class="fd-stat-label">Sunset</div><div class="fd-stat-value">🌇 ${fmtTime(d.sunset)}</div></div>` : '<div></div>'}
-            </div>` : ''}
+            ${d.snowfall > 0 ? `<div class="fd-stat fd-stat-snow"><div class="fd-stat-label">Snow</div><div class="fd-stat-value">❄️ ${(d.snowfall / 2.54).toFixed(1)}″</div></div>` : ''}
+            <div class="fd-stat fd-stat-wind">${renderWindCompass(d.windDegrees, d.windSpeed, d.gustSpeed)}</div>
         </div>
         ${nwsHTML}
     `;

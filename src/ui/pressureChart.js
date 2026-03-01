@@ -3,12 +3,12 @@
 // Globals read: cachedHourlyData, lastRefreshTime
 // Globals read (utils): getPressureTrend (from format.js)
 
-let _pcRange = '48h';
+let _pcRange = '3d';
 let _pcData  = null;
 
 function openPressureChart(hourlyData) {
     _pcData  = hourlyData;
-    _pcRange = '48h';
+    _pcRange = '3d';
     _pcRender();
     document.getElementById('pressureChartOverlay').classList.add('visible');
     document.body.style.overflow = 'hidden';
@@ -40,7 +40,7 @@ function _pcRender() {
         updatedStr = mins <= 1 ? 'just now' : `${mins} min ago`;
     }
 
-    const rangeBtns = ['12h', '48h', '7d'].map(r =>
+    const rangeBtns = ['24h', '3d', '7d'].map(r =>
         `<button class="pc-rb ${_pcRange === r ? 'active' : ''}" onclick="setPressureRange('${r}')">${r}</button>`
     ).join('');
 
@@ -195,7 +195,7 @@ function _pcXLabels(times, range, now, xOf, padT, cH, padL, W, padR) {
             + `fill="rgba(255,255,255,0.45)" font-size="10" font-family="JetBrains Mono, monospace">${label}</text>`;
     };
 
-    if (range === '12h' || range === '48h') {
+    if (range === '24h' || range === '3d') {
         // Adapt step to the ACTUAL data span (may be shorter than requested range
         // if past_days data hasn't been fetched yet, or it's early in the day)
         const dataStartH = (times[0].getTime() - now.getTime()) / 3600000; // e.g. -10.5 or -48
@@ -236,10 +236,10 @@ function _pcXLabels(times, range, now, xOf, padT, cH, padL, W, padR) {
 
 function _pcSlice(hourly, range, now) {
     let s, e;
-    if (range === '12h') {
-        s = new Date(now.getTime() - 12 * 3600000); e = now;
-    } else if (range === '48h') {
-        s = new Date(now.getTime() - 48 * 3600000); e = now;
+    if (range === '24h') {
+        s = new Date(now.getTime() - 24 * 3600000); e = now;
+    } else if (range === '3d') {
+        s = new Date(now.getTime() - 72 * 3600000); e = now;
     } else {
         s = now; e = new Date(now.getTime() + 7 * 24 * 3600000);
     }
@@ -260,8 +260,8 @@ function _pcStats(hourly, now) {
     if (ci < 0) ci = hourly.time.length - 1;
     const current = ci >= 0 ? Math.round(hourly.pressure_msl[ci]) : '—';
 
-    // High / Low over past 48 h
-    const cutoff = new Date(now.getTime() - 48 * 3600000);
+    // High / Low over past 72 h
+    const cutoff = new Date(now.getTime() - 72 * 3600000);
     const win = [];
     for (let i = 0; i < hourly.time.length; i++) {
         const t = new Date(hourly.time[i]);

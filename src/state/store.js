@@ -33,6 +33,7 @@ let cachedAlerts = { active: [], upcoming: [] };
 
 // AQI state (current AQI for display in forecast modal)
 let cachedAQI = null;
+let cachedAQIHourly = null;
 
 // Recent precipitation state
 let cachedRecentPrecip = null;

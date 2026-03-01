@@ -235,6 +235,8 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         if (document.getElementById('precipChartOverlay').classList.contains('visible')) {
             closePrecipChart();
+        } else if (document.getElementById('aqiChartOverlay').classList.contains('visible')) {
+            closeAQIChart();
         } else if (document.getElementById('pressureChartOverlay').classList.contains('visible')) {
             closePressureChart();
         } else if (document.getElementById('forecastDetailOverlay').classList.contains('visible')) {
