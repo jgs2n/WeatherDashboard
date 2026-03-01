@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.3.3';
+const CACHE_NAME = 'weather-hq-v1.3.4';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',

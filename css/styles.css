@@ -2627,6 +2627,9 @@ body {
     border-radius: 6px;
     transition: background 0.15s;
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
     padding: 0.15rem 0.25rem;
     margin: -0.15rem -0.25rem;
 }
@@ -2645,6 +2648,9 @@ body {
     border-radius: 6px;
     transition: background 0.15s;
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
     padding: 0.15rem 0.25rem;
     margin: -0.15rem -0.25rem;
 }
