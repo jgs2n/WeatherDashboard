@@ -113,8 +113,8 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
         const aqiCategory = getAQICategory(airQuality.current.us_aqi);
         cachedAQI = { value: Math.round(airQuality.current.us_aqi), ...aqiCategory };
         cachedAQIHourly = (airQuality.hourly && airQuality.hourly.us_aqi) ? airQuality.hourly : null;
-        const aqiBtnClass = cachedAQIHourly ? 'detail-item aqi-btn' : 'detail-item';
-        const aqiClick = cachedAQIHourly ? ' onclick="openAQIChart(cachedAQIHourly)" title="View air quality history"' : '';
+        const aqiBtnClass = 'detail-item aqi-btn';
+        const aqiClick = ' onclick="openAQIChart(cachedAQIHourly)" title="View air quality history"';
         aqiHTML = `
             <div class="${aqiBtnClass}"${aqiClick}>
                 <div class="detail-label">Air Quality</div>
