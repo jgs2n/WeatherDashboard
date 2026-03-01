@@ -88,17 +88,6 @@
         </div>
     </div>
 
-
-    <!-- Temporary iOS diagnostic — shows JS errors on screen -->
-    <script>
-    window.__dbg = [];
-    window.onerror = function(msg, src, line) {
-        var d = document.createElement('div');
-        d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#c00;color:#fff;padding:8px 12px;z-index:99999;font:12px/1.4 monospace;';
-        d.textContent = 'ERR: ' + msg + ' (' + (src||'').split('/').pop() + ':' + line + ')';
-        document.body.appendChild(d);
-    };
-    </script>
     <script src="src/state/store.js"></script>
     <script src="src/utils/weatherCodes.js"></script>
     <script src="src/utils/risk.js?v=1.2.7"></script>
