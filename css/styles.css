@@ -1779,7 +1779,7 @@ body {
 
 .hourly-detail-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 0.75rem;
 }
 
@@ -1825,6 +1825,14 @@ body {
     }
     .hourly-detail-title {
         font-size: 1.1rem;
+    }
+}
+
+@media (min-width: 769px) {
+    .hourly-detail-panel {
+        max-width: 400px;
+        margin-left: auto;
+        margin-right: auto;
     }
 }
 

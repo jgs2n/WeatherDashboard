@@ -54,22 +54,6 @@ function toggleHourlyDetail(index) {
                 <div class="hourly-detail-value">${Math.round(isNow ? cur.apparent_temperature : hourly.apparent_temperature[index])}°F</div>
             </div>
             <div class="hourly-detail-item">
-                <div class="hourly-detail-label">Humidity</div>
-                <div class="hourly-detail-value">${isNow ? cur.relative_humidity_2m : hourly.relative_humidity_2m[index]}%</div>
-            </div>
-            <div class="hourly-detail-item">
-                <div class="hourly-detail-label">Dew Point</div>
-                <div class="hourly-detail-value">${Math.round(isNow ? cur.dew_point_2m : hourly.dew_point_2m[index])}°F</div>
-            </div>
-            <div class="hourly-detail-item">
-                <div class="hourly-detail-label">Wind</div>
-                <div class="hourly-detail-value">${Math.round(isNow ? cur.wind_speed_10m : hourly.wind_speed_10m[index])} mph ${getWindDirection(isNow ? cur.wind_direction_10m : hourly.wind_direction_10m[index])}</div>
-            </div>
-            <div class="hourly-detail-item">
-                <div class="hourly-detail-label">Gusts</div>
-                <div class="hourly-detail-value">${Math.round(isNow ? cur.wind_gusts_10m : hourly.wind_gusts_10m[index])} mph</div>
-            </div>
-            <div class="hourly-detail-item">
                 <div class="hourly-detail-label">Precip Chance</div>
                 <div class="hourly-detail-value">${hourly.precipitation_probability[index] || 0}%</div>
             </div>
@@ -82,6 +66,22 @@ function toggleHourlyDetail(index) {
                     const label = intensity.label ? ` <span class="precip-intensity-label">\u00b7 ${intensity.label}</span>` : '';
                     return `${amt.toFixed(2)} in${label}`;
                 })()}</div>
+            </div>
+            <div class="hourly-detail-item">
+                <div class="hourly-detail-label">Wind</div>
+                <div class="hourly-detail-value">${Math.round(isNow ? cur.wind_speed_10m : hourly.wind_speed_10m[index])} mph from ${getWindDirection(isNow ? cur.wind_direction_10m : hourly.wind_direction_10m[index])}</div>
+            </div>
+            <div class="hourly-detail-item">
+                <div class="hourly-detail-label">Gusts</div>
+                <div class="hourly-detail-value">${Math.round(isNow ? cur.wind_gusts_10m : hourly.wind_gusts_10m[index])} mph</div>
+            </div>
+            <div class="hourly-detail-item">
+                <div class="hourly-detail-label">Humidity</div>
+                <div class="hourly-detail-value">${isNow ? cur.relative_humidity_2m : hourly.relative_humidity_2m[index]}%</div>
+            </div>
+            <div class="hourly-detail-item">
+                <div class="hourly-detail-label">Dew Point</div>
+                <div class="hourly-detail-value">${Math.round(isNow ? cur.dew_point_2m : hourly.dew_point_2m[index])}°F</div>
             </div>
             <div class="hourly-detail-item">
                 <div class="hourly-detail-label">Cloud Cover</div>
