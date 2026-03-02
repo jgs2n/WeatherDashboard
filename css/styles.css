@@ -2002,11 +2002,10 @@ body {
 .fd-stat       { background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; text-align: center; }
 .fd-stat-label { font-size: 0.6rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.25rem; }
 .fd-stat-value { font-size: 1.05rem; font-weight: 600; }
-.fd-stat-snow  { grid-column: 1 / -1; }
 .fd-stat-wind  { grid-column: 1 / -1; }
 .fd-stat-wind .wind-compass-body { justify-content: center; }
 .fd-stat-wind .detail-label { text-align: center; }
-.fd-stat-paired { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.fd-sun-value  { font-size: 0.9rem; line-height: 1.5; }
 .fd-nws        { width: 100%; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5; }
 .fd-nws-period { margin-bottom: 0.5rem; }
 .fd-nws-period:last-child { margin-bottom: 0; }

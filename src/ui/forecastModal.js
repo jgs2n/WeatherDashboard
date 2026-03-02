@@ -53,13 +53,19 @@ function renderForecastDetailDay(index) {
             <span class="fd-low">${d.lowDisplay}</span>
         </div>
         <div class="fd-grid">
-            ${(d.precipProb > 0 || cachedAQI) ? `
-            <div class="fd-stat-paired">
-                ${d.precipProb > 0 ? `<div class="fd-stat"><div class="fd-stat-label">Precip</div><div class="fd-stat-value">💧 ${d.precipProb}%${d.precipAmount > 0 ? ` · ${d.precipAmount.toFixed(1)}″` : ''}</div></div>` : '<div></div>'}
-                ${cachedAQI ? `<div class="fd-stat"><div class="fd-stat-label">Air Quality</div><div class="fd-stat-value" style="color:${cachedAQI.color}">${cachedAQI.icon} ${cachedAQI.value}</div><div class="fd-stat-label" style="margin-top:0.2rem">${cachedAQI.level}</div></div>` : '<div></div>'}
-            </div>` : ''}
-            ${d.snowfall > 0 ? `<div class="fd-stat fd-stat-snow"><div class="fd-stat-label">Snow</div><div class="fd-stat-value">❄️ ${(d.snowfall / 2.54).toFixed(1)}″</div></div>` : ''}
+            <div class="fd-stat"><div class="fd-stat-label">Precip Chance</div><div class="fd-stat-value">💧 ${d.precipProb}%</div></div>
+            <div class="fd-stat"><div class="fd-stat-label">Precip Volume</div><div class="fd-stat-value">${(() => {
+                const snowIn = d.snowfall > 0 ? (d.snowfall / 2.54) : 0;
+                const rain = d.precipAmount > 0;
+                const snow = snowIn > 0;
+                if (rain && snow) return `🌧️ ${d.precipAmount.toFixed(2)}″ ❄️ ${snowIn.toFixed(1)}″`;
+                if (snow) return `❄️ ${snowIn.toFixed(1)}″`;
+                if (rain) return `🌧️ ${d.precipAmount.toFixed(2)}″`;
+                return '0.0″';
+            })()}</div></div>
             <div class="fd-stat fd-stat-wind">${renderWindCompass(d.windDegrees, d.windSpeed, d.gustSpeed)}</div>
+            <div class="fd-stat">${cachedAQI ? `<div class="fd-stat-label">Air Quality</div><div class="fd-stat-value" style="color:${cachedAQI.color}">${cachedAQI.icon} ${cachedAQI.value}</div><div class="fd-stat-label" style="margin-top:0.2rem">${cachedAQI.level}</div>` : `<div class="fd-stat-label">Air Quality</div><div class="fd-stat-value">—</div>`}</div>
+            <div class="fd-stat"><div class="fd-stat-label">Sun</div><div class="fd-stat-value fd-sun-value">↑ ${fmtTime(d.sunrise)}<br>↓ ${fmtTime(d.sunset)}</div></div>
         </div>
         ${nwsHTML}
     `;
