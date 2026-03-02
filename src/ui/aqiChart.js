@@ -116,10 +116,18 @@ function _acSVG(times, values, range, now, accentColor) {
     const xOf = t => padL + ((t.getTime() - t0) / tD) * cW;
     const yOf = v => padT + (1 - (v - yMin) / (yMax - yMin)) * cH;
 
-    const pts   = times.map((t, i) => `${xOf(t).toFixed(1)},${yOf(values[i]).toFixed(1)}`);
-    const lineD = 'M ' + pts.join(' L ');
+    // Split data at "now" into past and future segments
+    let ni = times.findIndex(t => t >= now);
+    if (ni < 0) ni = times.length;
+    const allPts  = times.map((t, i) => `${xOf(t).toFixed(1)},${yOf(values[i]).toFixed(1)}`);
+    const pastPts = allPts.slice(0, ni + 1);
+    const futPts  = allPts.slice(Math.max(0, ni));
+
+    const pastLineD = pastPts.length >= 2 ? 'M ' + pastPts.join(' L ') : '';
+    const futLineD  = futPts.length >= 2  ? 'M ' + futPts.join(' L ')  : '';
+
     const bY    = (padT + cH).toFixed(1);
-    const areaD = `M ${xOf(times[0]).toFixed(1)},${bY} L ${pts.join(' L ')} `
+    const areaD = `M ${xOf(times[0]).toFixed(1)},${bY} L ${allPts.join(' L ')} `
                 + `L ${xOf(times[times.length - 1]).toFixed(1)},${bY} Z`;
 
     // Y-axis grid + labels
@@ -160,23 +168,20 @@ function _acSVG(times, values, range, now, accentColor) {
 
     const xLabels = _acXLabels(times, range, now, xOf, padT, cH, padL, W, padR);
 
-    // "Now" marker for past-range charts
-    let nowMark = '';
-    if (range !== '7d') {
-        const lastI = times.length - 1;
-        const nx    = xOf(times[lastI]).toFixed(1);
-        const ny    = yOf(values[lastI]).toFixed(1);
-        const nowV  = Math.round(values[lastI]);
-        nowMark =
-            `<line x1="${nx}" y1="${padT}" x2="${nx}" y2="${bY}" `
-          + `stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="3,3"/>`
-          + `<circle cx="${nx}" cy="${ny}" r="4.5" fill="${accentColor}" stroke="#0d1117" stroke-width="2"/>`
-          + `<text x="${(parseFloat(nx) + 9).toFixed(1)}" y="${ny}" dominant-baseline="middle" `
-          + `fill="rgba(255,255,255,0.82)" font-size="10" font-family="JetBrains Mono, monospace">`
-          + `Now ${nowV}</text>`;
-    }
+    // "Now" marker — vertical dashed line + dot + stacked label above chart
+    const nx   = xOf(now).toFixed(1);
+    const nowI = ni < times.length ? ni : times.length - 1;
+    const nowV = Math.round(values[nowI]);
+    const ny   = yOf(values[nowI]).toFixed(1);
+    const nowMark =
+        `<line x1="${nx}" y1="${padT}" x2="${nx}" y2="${bY}" `
+      + `stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="3,3"/>`
+      + `<circle cx="${nx}" cy="${ny}" r="4.5" fill="${accentColor}" stroke="#0d1117" stroke-width="2"/>`
+      + `<text x="${nx}" y="${(parseFloat(ny) - 22).toFixed(1)}" text-anchor="middle" `
+      + `fill="rgba(255,255,255,0.55)" font-size="9" font-family="JetBrains Mono, monospace">Now</text>`
+      + `<text x="${nx}" y="${(parseFloat(ny) - 10).toFixed(1)}" text-anchor="middle" `
+      + `fill="${accentColor}" font-size="10" font-weight="bold" font-family="JetBrains Mono, monospace">${nowV}</text>`;
 
-    // Encode accent color for SVG gradient ID (strip #)
     const gradId = 'acAreaGrad';
 
     return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"
@@ -191,8 +196,10 @@ function _acSVG(times, values, range, now, accentColor) {
     ${yLines}
     ${baseline}
     <path d="${areaD}" fill="url(#${gradId})"/>
-    <path d="${lineD}" fill="none" stroke="rgba(255,255,255,0.88)"
-          stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${pastLineD ? `<path d="${pastLineD}" fill="none" stroke="rgba(255,255,255,0.88)"
+          stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+    ${futLineD ? `<path d="${futLineD}" fill="none" stroke="rgba(255,255,255,0.50)"
+          stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
     ${nowMark}
     ${xLabels}
 </svg>`;
@@ -217,26 +224,21 @@ function _acXLabels(times, range, now, xOf, padT, cH, padL, W, padR) {
             + `fill="rgba(255,255,255,0.45)" font-size="10" font-family="JetBrains Mono, monospace">${label}</text>`;
     };
 
-    if (range === '24h' || range === '3d') {
-        const dataStartH = (times[0].getTime() - now.getTime()) / 3600000;
-        const actualSpan = Math.abs(dataStartH);
-        let step;
-        if      (actualSpan <= 2)  step = 0.5;
-        else if (actualSpan <= 6)  step = 1;
-        else if (actualSpan <= 12) step = 3;
-        else if (actualSpan <= 24) step = 6;
-        else                       step = 12;
-
-        const hStart = Math.floor(dataStartH / step) * step;
-        for (let h = hStart; h <= 0; h += step) {
+    if (range === '24h') {
+        // ±24h: relative hour labels
+        const step = 12;
+        for (let h = -24; h <= 24; h += step) {
+            if (h === 0) continue; // Now marker handles center
             const t = new Date(now.getTime() + h * 3600000);
             const x = xOf(t);
             if (x < padL - 16 || x > W - padR + 1) continue;
-            out.push(tick(x, h === 0 ? 'Now' : `${Math.round(h)}h`, false));
+            out.push(tick(x, `${h > 0 ? '+' : ''}${h}h`, false));
         }
     } else {
-        // 7d — day separators
-        for (let d = 0; d <= 7; d++) {
+        // 3d / 7d — day separators + day labels on both sides of Now
+        const maxDays = range === '3d' ? 3 : 7;
+        for (let d = -maxDays; d <= maxDays; d++) {
+            if (range === '7d' && d !== 0 && Math.abs(d) % 2 !== 0) continue;
             const t = new Date(now);
             t.setDate(t.getDate() + d);
             t.setHours(0, 0, 0, 0);
@@ -252,14 +254,9 @@ function _acXLabels(times, range, now, xOf, padT, cH, padL, W, padR) {
 // ─── Data helpers ─────────────────────────────────────────────────────────────
 
 function _acSlice(hourly, range, now) {
-    let s, e;
-    if (range === '24h') {
-        s = new Date(now.getTime() - 24 * 3600000); e = now;
-    } else if (range === '3d') {
-        s = new Date(now.getTime() - 72 * 3600000); e = now;
-    } else {
-        s = now; e = new Date(now.getTime() + 7 * 24 * 3600000);
-    }
+    const h = range === '24h' ? 24 : range === '3d' ? 72 : 168;
+    const s = new Date(now.getTime() - h * 3600000);
+    const e = new Date(now.getTime() + h * 3600000);
     const times = [], values = [];
     for (let i = 0; i < hourly.time.length; i++) {
         const t = new Date(hourly.time[i]);
