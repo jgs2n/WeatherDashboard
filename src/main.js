@@ -139,6 +139,9 @@ function switchLocation(index) {
         return;
     }
     if (touchDragState.editMode) exitEditMode();
+    // Stop nowcast polling for old location + reset radar state
+    stopNowcastPolling();
+    if (typeof resetRadarState === 'function') resetRadarState();
     activeLocation = savedLocations[index];
     saveLocations();
     renderTabs();
@@ -242,6 +245,8 @@ document.addEventListener('keydown', e => {
             closePressureChart();
         } else if (document.getElementById('forecastDetailOverlay').classList.contains('visible')) {
             closeForecastDetail();
+        } else if (document.getElementById('obsDetailOverlay') && document.getElementById('obsDetailOverlay').classList.contains('visible')) {
+            closeConditionDetail();
         } else {
             closeAlertModal();
         }
@@ -305,16 +310,25 @@ async function fetchWeatherData() {
             ? await showLocationPicker(geocodeResult)
             : geocodeResult;
 
-        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw] = await Promise.all([
+        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs] = await Promise.all([
             fetchForecast(location.lat, location.lon),
             fetchAirQuality(location.lat, location.lon),
             fetchNWS(location.lat, location.lon),
             fetchModelComparison(location.lat, location.lon),
-            fetchRecentPrecip(location.lat, location.lon)
+            fetchRecentPrecip(location.lat, location.lon),
+            getNowSummary({ lat: location.lat, lon: location.lon, country: location.country }),
+            fetchObservationHistory(location.lat, location.lon),
+            fetchStationObservation(location.lat, location.lon)
         ]);
 
-        const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC');
-        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData);
+        const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
+        cachedStationObs = stationObs;
+        cachedNowSummary = nowSummary;
+        saveNowcastState(nowSummary, location.lat, location.lon);
+        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
+
+        // Start nowcast polling
+        startNowcastPolling(location.lat, location.lon, location.country);
 
         // Deferred AQI retry — if the initial fetch failed, try once more after 2s
         if (!airQualityData) {
@@ -341,16 +355,25 @@ async function fetchWeatherDataDirect(lat, lon, location) {
     container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading weather data...</div>';
 
     try {
-        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw] = await Promise.all([
+        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs] = await Promise.all([
             fetchForecast(lat, lon),
             fetchAirQuality(lat, lon),
             fetchNWS(lat, lon),
             fetchModelComparison(lat, lon),
-            fetchRecentPrecip(lat, lon)
+            fetchRecentPrecip(lat, lon),
+            getNowSummary({ lat, lon, country: location.country }),
+            fetchObservationHistory(lat, lon),
+            fetchStationObservation(lat, lon)
         ]);
 
-        const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC');
-        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData);
+        const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
+        cachedStationObs = stationObs;
+        cachedNowSummary = nowSummary;
+        saveNowcastState(nowSummary, lat, lon);
+        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
+
+        // Start nowcast polling (independent of full dashboard refresh)
+        startNowcastPolling(lat, lon, location.country);
 
         if (!airQualityData) {
             setTimeout(async () => {
@@ -369,6 +392,7 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 function init() {
     console.log(`Weather Command Center v${APP_VERSION}`);
     loadSavedLocations();
+    loadNowcastState();
     renderTabs();
 
     if (activeLocation) {

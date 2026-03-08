@@ -95,13 +95,18 @@ function renderPrecipSpark(rp) {
     const rainStr = (rp.rainTotal > 0) ? `${rp.rainTotal.toFixed(2)}"` : '—';
     const lagMinutes = rp.lagMinutes || 0;
     const lagStr = lagMinutes < 60 ? `${lagMinutes} min ago` : `${Math.floor(lagMinutes / 60)}h ago`;
-    const missingStr = rp.missingHours > 0 ? ` · ⚠ ${rp.missingHours}h missing` : '';
+    // IEM ASOS: missing hours = dry hours (M in METAR), not actual gaps — suppress warning
+    const missingStr = (rp.missingHours > 0 && rp.method !== 'iem_asos') ? ` · ⚠ ${rp.missingHours}h missing` : '';
     let badgeClass = 'est', badgeText = 'EST';
     if (rp.method === 'meteostat_hourly' && !rp.qualityFlags.includes('stale') && !rp.qualityFlags.includes('very_stale')) {
         badgeClass = 'live'; badgeText = 'LIVE';
     }
     if (lagMinutes > 360 || rp.qualityFlags.includes('very_stale')) {
         badgeClass = 'stale'; badgeText = 'STALE';
+    }
+    // IEM ASOS: always OBS — recorded amounts are accurate regardless of how old the last report is
+    if (rp.method === 'iem_asos') {
+        badgeClass = 'live'; badgeText = 'OBS';
     }
 
     // SVG layout

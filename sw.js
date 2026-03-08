@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.4.9';
+const CACHE_NAME = 'weather-hq-v1.8.7';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
@@ -7,11 +7,15 @@ const PRECACHE_URLS = [
     'src/utils/risk.js',
     'src/utils/dom.js',
     'src/utils/moon.js',
+    'src/utils/metarParse.js',
     'src/utils/format.js',
     'src/services/geocode.js',
     'src/services/openMeteo.js',
     'src/services/nws.js',
     'src/services/recentPrecip.js',
+    'src/services/observations.js',
+    'src/services/radarSampler.js',
+    'src/services/nowcast.js',
     'src/ui/locationPicker.js',
     'src/ui/pressureChart.js',
     'src/ui/aqiChart.js?v=1.0.5',
@@ -19,7 +23,7 @@ const PRECACHE_URLS = [
     'src/ui/forecastModal.js',
     'src/ui/hourly.js',
     'src/ui/share.js',
-    'src/ui/renderDashboard.js?v=1.2.3',
+    'src/ui/renderDashboard.js?v=1.8.5',
     'src/ui/tabDrag.js',
     'src/main.js',
     'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap'

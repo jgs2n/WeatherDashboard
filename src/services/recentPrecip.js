@@ -50,18 +50,90 @@ async function fetchRecentPrecip(lat, lon) {
 }
 
 // ── Build normalized RecentPrecip object ──────────────────────────────────────
-// Tries Meteostat first; falls back to Open-Meteo model data.
+// Priority: NWS obs history (US, free) → Meteostat (paid key) → Open-Meteo model.
 // Always returns a RecentPrecip object (never null) as long as openMeteoHourly exists.
 
-function buildRecentPrecip(meteostatRaw, openMeteoHourly, timezone) {
+function buildRecentPrecip(meteostatRaw, openMeteoHourly, timezone, nwsHistory) {
     const now = new Date();
 
+    // 1. IEM ASOS observation history — actual ASOS p01i data, US only, no key required
+    if (nwsHistory && nwsHistory.rows && nwsHistory.rows.length >= 3) {
+        const result = _buildFromNWSHistory(nwsHistory, timezone);
+        if (result) return result;
+    }
+
+    // 2. Meteostat — station-based, requires paid API key
     if (meteostatRaw && meteostatRaw.data && meteostatRaw.data.length > 0) {
         const result = _buildFromMeteostat(meteostatRaw, openMeteoHourly, now, timezone);
         if (result) return result;
     }
 
+    // 3. Open-Meteo model — always available, estimated
     return _buildFallback(openMeteoHourly, now, timezone);
+}
+
+// ── NWS observation history path ──────────────────────────────────────────────
+// Builds a 48H series ending at NOW from NWS ASOS precipitationLastHour values.
+// Uses a Map for O(1) hour-bucket lookup instead of O(n) find() per slot.
+
+function _buildFromNWSHistory(nwsHistory, timezone) {
+    const { station, rows } = nwsHistory;
+    const now = new Date();
+
+    const lastRow    = rows[rows.length - 1];
+    const asOf       = new Date(lastRow.time);
+    const lagMinutes = Math.floor((now - asOf) / 60000);
+
+    // Build hour-bucket → row map (epoch ms floored to the hour)
+    const rowMap = new Map();
+    for (const r of rows) {
+        const bucket = Math.floor(new Date(r.time).getTime() / 3600000);
+        rowMap.set(bucket, r);
+    }
+
+    // 48 slots ending at the current hour so the chart always shows "last 48h to now"
+    const nowHour = Math.floor(now.getTime() / 3600000) * 3600000;
+    const series  = [];
+    for (let h = 47; h >= 0; h--) {
+        const slotMs = nowHour - h * 3600000;
+        const bucket = Math.floor(slotMs / 3600000);
+        // ±1 bucket tolerance for obs that land slightly off the hour
+        const match  = rowMap.get(bucket) || rowMap.get(bucket - 1) || rowMap.get(bucket + 1);
+        if (match) {
+            series.push({
+                time:    new Date(slotMs).toISOString(),
+                rainIn:  match.rainIn,    // null = missing data; 0 = dry; >0 = rain
+                snowIn:  0,
+                present: match.present    // true only when precipitationLastHour was non-null
+            });
+        } else {
+            series.push({ time: new Date(slotMs).toISOString(), rainIn: null, snowIn: null, present: false });
+        }
+    }
+
+    const presentCount = series.filter(s => s.present).length;
+    const flags = ['unit_converted'];
+    if (lagMinutes > 180) flags.push('stale');
+    if (presentCount < 24) flags.push('partial'); // warn if less than half the window is covered
+
+    return {
+        fullSeries:    series,
+        asOf:          asOf.toISOString(),
+        lagMinutes,
+        method:        'iem_asos',
+        source: {
+            provider:    'IEM ASOS',
+            stationId:   station.stationId,
+            stationName: station.stationName,
+            distanceKm:  station.distance_mi != null ? Math.round(station.distance_mi * 1.609) : null,
+            gridProduct: null
+        },
+        qualityFlags:  flags,
+        timezone:      timezone || 'UTC',
+        expectedHours: 48,
+        reportedHours: presentCount,
+        missingHours:  48 - presentCount
+    };
 }
 
 // ── Meteostat path ────────────────────────────────────────────────────────────

@@ -517,16 +517,43 @@ body {
 .weather-icon-wrap {
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
+    align-items: center;
     gap: 0.2rem;
 }
 
 .weather-condition {
     font-size: 0.58rem;
     color: var(--text-secondary);
-    text-align: right;
+    text-align: center;
     text-transform: uppercase;
     letter-spacing: 0.05rem;
+}
+
+.nowcast-subtitle {
+    font-size: 0.5rem;
+    color: var(--text-secondary);
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.03rem;
+    opacity: 0.6;
+    margin-top: 0.1rem;
+}
+
+.nowcast-rain-timing {
+    font-size: 0.6rem;
+    color: #4fc3f7;
+    text-align: right;
+    letter-spacing: 0.02rem;
+    margin-top: 0.2rem;
+}
+
+.nowcast-thunder-line {
+    font-size: 0.6rem;
+    color: #ffb74d;
+    text-align: right;
+    letter-spacing: 0.02rem;
+    margin-top: 0.15rem;
+    font-weight: 600;
 }
 
 .weather-icon {
@@ -2475,6 +2502,106 @@ body {
         padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
         padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
     }
+}
+
+/* ===== CONDITION DETAIL MODAL ===== */
+
+.obs-clickable {
+    cursor: pointer;
+}
+.obs-clickable:hover {
+    opacity: 0.85;
+}
+
+.obs-modal {
+    position: relative;
+    background: #0d1117;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 14px;
+    padding: 1.2rem 1.2rem 1rem;
+    width: min(360px, 92vw);
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.obs-modal-close {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.8rem;
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0.2rem 0.3rem;
+}
+.obs-modal-close:hover { color: #fff; }
+
+.obs-detail { padding-top: 0.2rem; }
+
+.obs-station {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.25rem;
+    padding-right: 1.5rem;
+}
+
+.obs-age {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.6rem;
+}
+
+.obs-cond-label {
+    font-size: 1.1rem;
+    margin-bottom: 0.75rem;
+}
+
+.obs-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.obs-item {
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 0.45rem 0.6rem;
+}
+
+.obs-label {
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.15rem;
+}
+
+.obs-value {
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+.obs-metar {
+    font-size: 0.62rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: rgba(255, 255, 255, 0.45);
+    background: rgba(0, 0, 0, 0.35);
+    padding: 0.5rem 0.6rem;
+    border-radius: 6px;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.obs-no-data {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding: 0.5rem 0;
 }
 
 /* ===== PRESSURE CHART MODAL ===== */

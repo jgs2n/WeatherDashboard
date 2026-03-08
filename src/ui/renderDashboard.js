@@ -122,9 +122,39 @@ function updateAQITile(airQuality) {
 }
 
 // Current conditions card — returns HTML string, writes cachedAlerts, cachedRecentPrecip
-function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip) {
+function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary) {
     const current = openMeteo.current;
-    const weatherCode = WEATHER_CODES[current.weather_code] || WEATHER_CODES[0];
+    const weatherInfo = getWeatherInfo(current.weather_code);
+
+    // Determine condition to display: nowcast (METAR/radar) or Open-Meteo model fallback
+    let displayCondition, conditionSubtitle;
+    if (nowSummary && nowSummary.condition) {
+        const nc = nowSummary.condition;
+        displayCondition = { desc: nc.desc, icon: nc.icon };
+        const ageMins = metarAgeMinutes(nc.updatedAt);
+        const ageStr = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
+        conditionSubtitle = ageStr;
+    } else {
+        displayCondition = weatherInfo;
+        conditionSubtitle = '';
+    }
+
+    // Build rain timing HTML
+    let rainTimingHTML = '';
+    if (nowSummary && nowSummary.rain) {
+        const rain = nowSummary.rain;
+        if (rain.isRainingNow && rain.endInMin != null) {
+            rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F Rain ending in ~${rain.endInMin} min</div>`;
+        } else if (!rain.isRainingNow && rain.beginInMin != null) {
+            rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F Rain begins in ~${rain.beginInMin} min</div>`;
+        }
+    }
+
+    // Build thunder HTML
+    let thunderHTML = '';
+    if (nowSummary && nowSummary.thunder && nowSummary.thunder.isThunderNow) {
+        thunderHTML = `<div class="nowcast-thunder-line">\u26C8\uFE0F Thunder within ${nowSummary.thunder.withinMi} mi</div>`;
+    }
 
     const fireRisk = calculateFireRisk(current.temperature_2m, current.relative_humidity_2m, current.wind_speed_10m);
     const pressureTrend = getPressureTrend(openMeteo.hourly);
@@ -243,8 +273,11 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                 <div class="temperature">${Math.round(current.temperature_2m)}°F</div>
                 ${renderWindCompass(current.wind_direction_10m, Math.round(current.wind_speed_10m), Math.round(current.wind_gusts_10m), false, false)}
                 <div class="weather-icon-wrap">
-                    <div class="weather-icon">${weatherCode.icon}</div>
-                    <div class="weather-condition">${weatherCode.desc}</div>
+                    <div class="weather-icon">${displayCondition.icon}</div>
+                    <div class="weather-condition">${displayCondition.desc}</div>
+                    <div class="nowcast-subtitle">${conditionSubtitle}</div>
+                    ${rainTimingHTML}
+                    ${thunderHTML}
                 </div>
             </div>
             <div class="weather-details">
@@ -375,7 +408,7 @@ function renderForecastGrid(daily, nws, modelComparison, locLabel) {
         : false;
     const forecastHTML = daily.time.slice(startIdx, startIdx + 10).map((date, i) => {
         const di = startIdx + i; // index into daily arrays (offset by past days)
-        const dayCode = WEATHER_CODES[daily.weather_code[di]] || WEATHER_CODES[0];
+        const dayInfo = getWeatherInfo(daily.weather_code[di]);
 
         const dateParts = date.split('-');
         const year = parseInt(dateParts[0]);
@@ -450,7 +483,7 @@ function renderForecastGrid(daily, nws, modelComparison, locLabel) {
 
         forecastDays.push({
             dayName, fullDayName, dateDisplay,
-            icon: dayCode.icon, desc: dayCode.desc,
+            icon: dayInfo.icon, desc: dayInfo.desc,
             high: bestHigh, low: bestLow,
             highDisplay, lowDisplay, hasSpread, tooltipData,
             precipProb, precipAmount, snowfall,
@@ -474,7 +507,7 @@ function renderForecastGrid(daily, nws, modelComparison, locLabel) {
             <div class="forecast-item" onclick="openForecastDetail(${i})">
                 <div class="forecast-day">${dayName}</div>
                 <div class="forecast-date">${dateDisplay}</div>
-                <div class="forecast-icon">${dayCode.icon}</div>
+                <div class="forecast-icon">${dayInfo.icon}</div>
                 <div class="forecast-temp-range ${hasSpread ? 'has-model-spread' : ''}"
                      ${hasSpread ? `onclick="showModelTooltip(event, '${tooltipData}')" data-tooltip="${tooltipData}"` : ''}>
                     <div class="temp-high">${highDisplay}</div>
@@ -521,9 +554,9 @@ function renderHourlyStrip(hourly, current, locLabel) {
     for (let i = startIndex; i < endIndex; i++) {
         const time = new Date(hourly.time[i]);
         const isNow = i === startIndex;
-        const hourCode = isNow && current
-            ? (WEATHER_CODES[current.weather_code] || WEATHER_CODES[0])
-            : (WEATHER_CODES[hourly.weather_code[i]] || WEATHER_CODES[0]);
+        const hourInfo = isNow && current
+            ? getWeatherInfo(current.weather_code)
+            : getWeatherInfo(hourly.weather_code[i]);
         const temp = isNow && current ? Math.round(current.temperature_2m) : Math.round(hourly.temperature_2m[i]);
         const precip = hourly.precipitation_probability[i] || 0;  // always from hourly
         const precipAmt = hourly.precipitation[i] || 0;
@@ -546,7 +579,7 @@ function renderHourlyStrip(hourly, current, locLabel) {
         pills.push(`
             <div class="hourly-pill ${isNow ? 'now-pill' : ''}" data-hourly-index="${i}" onclick="toggleHourlyDetail(${i})">
                 <span class="hourly-time">${timeLabel}</span>
-                <span class="hourly-icon">${hourCode.icon}</span>
+                <span class="hourly-icon">${hourInfo.icon}</span>
                 <span class="hourly-temp">${temp}°</span>
                 ${precip > 0 ? `<span class="hourly-precip has-precip${precipIntensity.type !== 'none' ? ` precip-${precipIntensity.type}-${precipIntensity.level}` : ''}">${precipIntensity.type === 'snow' ? '❄️' : '💧'}${precip}%</span>` : `<span class="hourly-precip">&nbsp;</span>`}
                 ${renderWindCompass(windDir, wind, gusts, true)}
@@ -574,11 +607,11 @@ function renderHourlyStrip(hourly, current, locLabel) {
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelComparison, recentPrecip) {
+function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelComparison, recentPrecip, nowSummary) {
     const container = document.getElementById('weatherContainer');
     const locLabel = extractDisplayName(location.name);
 
-    const currentCardHTML = renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip);
+    const currentCardHTML = renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary);
     const forecastGridHTML = renderForecastGrid(openMeteo.daily, nws, modelComparison, locLabel);
     const hourlyStripHTML = renderHourlyStrip(openMeteo.hourly, openMeteo.current, locLabel);
 
@@ -613,4 +646,150 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
     }
 
     fetchAllLocationTemps();
+}
+
+// ─── In-place nowcast update (called by polling, no full re-render) ──────────
+
+function updateNowcastDisplay(nowSummary) {
+    if (!nowSummary) return;
+
+    const condEl = document.querySelector('.weather-condition');
+    const iconEl = document.querySelector('.weather-icon');
+    const subEl  = document.querySelector('.nowcast-subtitle');
+
+    if (nowSummary.condition) {
+        const nc = nowSummary.condition;
+        if (condEl) condEl.textContent = nc.desc;
+        if (iconEl) iconEl.textContent = nc.icon;
+        if (subEl) {
+            const ageMins = metarAgeMinutes(nc.updatedAt);
+            const ageStr = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
+            subEl.textContent = ageStr;
+            subEl.classList.remove('stale');
+        }
+    } else if (subEl) {
+        subEl.textContent = '';
+    }
+
+    // Rain timing — find or create element
+    let rainEl = document.querySelector('.nowcast-rain-timing');
+    const iconWrap = document.querySelector('.weather-icon-wrap');
+    if (nowSummary.rain) {
+        const rain = nowSummary.rain;
+        if (rain.isRainingNow && rain.endInMin != null) {
+            if (!rainEl && iconWrap) {
+                rainEl = document.createElement('div');
+                rainEl.className = 'nowcast-rain-timing';
+                iconWrap.appendChild(rainEl);
+            }
+            if (rainEl) { rainEl.textContent = '\uD83C\uDF27\uFE0F Rain ending in ~' + rain.endInMin + ' min'; rainEl.style.display = ''; }
+        } else if (!rain.isRainingNow && rain.beginInMin != null) {
+            if (!rainEl && iconWrap) {
+                rainEl = document.createElement('div');
+                rainEl.className = 'nowcast-rain-timing';
+                iconWrap.appendChild(rainEl);
+            }
+            if (rainEl) { rainEl.textContent = '\uD83C\uDF27\uFE0F Rain begins in ~' + rain.beginInMin + ' min'; rainEl.style.display = ''; }
+        } else if (rainEl) {
+            rainEl.style.display = 'none';
+        }
+    } else if (rainEl) {
+        rainEl.style.display = 'none';
+    }
+
+    // Thunder line — find or create element
+    let thunderEl = document.querySelector('.nowcast-thunder-line');
+    if (nowSummary.thunder && nowSummary.thunder.isThunderNow) {
+        if (!thunderEl && iconWrap) {
+            thunderEl = document.createElement('div');
+            thunderEl.className = 'nowcast-thunder-line';
+            iconWrap.appendChild(thunderEl);
+        }
+        if (thunderEl) { thunderEl.textContent = '\u26C8\uFE0F Thunder within ' + nowSummary.thunder.withinMi + ' mi'; thunderEl.style.display = ''; }
+    } else if (thunderEl) {
+        thunderEl.style.display = 'none';
+    }
+}
+
+// ─── Condition Detail Modal ───────────────────────────────────────────────────
+
+function openConditionDetail() {
+    const overlay = document.getElementById('obsDetailOverlay');
+    const body = document.getElementById('obsDetailBody');
+    if (!overlay || !body) return;
+
+    const obs = cachedStationObs && cachedStationObs.obs;
+    const station = cachedStationObs || null;
+    const nc = cachedNowSummary && cachedNowSummary.condition;
+
+    let html = '<div class="obs-detail">';
+
+    // Station header
+    const stId   = station ? station.stationId   : (nc && nc.station ? nc.station.id   : null);
+    const stName  = station ? station.stationName  : (nc && nc.station ? nc.station.name : null);
+    const stDist  = station ? station.distance_mi  : (nc && nc.station ? nc.station.dist_mi : null);
+    if (stId) {
+        const distStr = stDist != null ? ` · ${stDist} mi` : '';
+        html += `<div class="obs-station">${stId}${stName && stName !== stId ? ' — ' + escapeHTML(stName) : ''}${distStr}</div>`;
+    }
+
+    if (obs) {
+        const ageMin = metarAgeMinutes(obs.timestamp);
+        const ageStr = ageMin < 1 ? 'just now' : ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`;
+        html += `<div class="obs-age">Observed ${ageStr}</div>`;
+
+        // Parsed condition
+        const cond = parseMetarCondition(obs.presentWeather, obs.textDescription);
+        if (cond.desc !== 'Unknown') {
+            html += `<div class="obs-cond-label">${cond.icon} ${cond.desc}</div>`;
+        }
+
+        // Data grid
+        html += '<div class="obs-grid">';
+
+        if (obs.temperature_c != null) {
+            const tempF = Math.round(obs.temperature_c * 9 / 5 + 32);
+            html += `<div class="obs-item"><div class="obs-label">Temperature</div><div class="obs-value">${tempF}°F</div></div>`;
+        }
+        if (obs.humidity != null) {
+            html += `<div class="obs-item"><div class="obs-label">Humidity</div><div class="obs-value">${Math.round(obs.humidity)}%</div></div>`;
+        }
+        if (obs.wind_speed_kmh != null) {
+            const windMph  = Math.round(obs.wind_speed_kmh * 0.621371);
+            const gustMph  = obs.wind_gust_kmh ? Math.round(obs.wind_gust_kmh * 0.621371) : null;
+            const dir      = obs.wind_dir != null ? getWindDirection(obs.wind_dir) : '';
+            const gustStr  = gustMph ? ` G${gustMph}` : '';
+            html += `<div class="obs-item"><div class="obs-label">Wind</div><div class="obs-value">${dir} ${windMph}${gustStr} mph</div></div>`;
+        }
+        if (obs.visibility_m != null) {
+            const visMi = (obs.visibility_m / 1609.34).toFixed(obs.visibility_m >= 16093 ? 0 : 1);
+            html += `<div class="obs-item"><div class="obs-label">Visibility</div><div class="obs-value">${visMi} mi</div></div>`;
+        }
+        if (obs.pressure_pa != null) {
+            const inHg = (obs.pressure_pa / 3386.39).toFixed(2);
+            html += `<div class="obs-item"><div class="obs-label">Altimeter</div><div class="obs-value">${inHg} inHg</div></div>`;
+        }
+
+        html += '</div>'; // end obs-grid
+
+        // Raw METAR
+        if (obs.rawMessage) {
+            html += `<div class="obs-metar">${escapeHTML(obs.rawMessage)}</div>`;
+        }
+    } else if (!stId) {
+        html += '<div class="obs-no-data">Station data unavailable for this location.</div>';
+    } else {
+        html += '<div class="obs-no-data">Observation details unavailable.</div>';
+    }
+
+    html += '</div>';
+    body.innerHTML = html;
+    overlay.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeConditionDetail() {
+    const overlay = document.getElementById('obsDetailOverlay');
+    if (overlay) overlay.classList.remove('visible');
+    document.body.style.overflow = '';
 }

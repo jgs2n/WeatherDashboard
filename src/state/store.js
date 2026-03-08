@@ -38,8 +38,21 @@ let cachedAQIHourly = null;
 // Recent precipitation state
 let cachedRecentPrecip = null;
 
+// Station observation state (for condition detail modal)
+let cachedStationObs = null;
+
 // Tooltip state
 let activeTooltip = null;
+
+// Nowcast state
+let cachedNowSummary = null;
+let _nowcastPollTimer = null;
+const NOWCAST_STORAGE_KEY = 'nowcastState';
+
+// Adaptive polling intervals (ms)
+const POLL_DRY_MS     = 5 * 60 * 1000;  // 5 min — dry, no nearby echoes
+const POLL_ACTIVE_MS  = 2 * 60 * 1000;  // 2 min — raining or rain imminent
+const POLL_DEFAULT_MS = 3 * 60 * 1000;  // 3 min — fallback
 
 // Load saved locations from localStorage
 function loadSavedLocations() {
@@ -68,5 +81,36 @@ function saveLocations() {
     localStorage.setItem('weatherLocations', JSON.stringify(savedLocations));
     if (activeLocation) {
         localStorage.setItem('activeLocation', activeLocation.name);
+    }
+}
+
+// Load cached nowcast state from localStorage (called from init)
+function loadNowcastState() {
+    try {
+        const stored = localStorage.getItem(NOWCAST_STORAGE_KEY);
+        if (!stored || !activeLocation) return;
+        const parsed = JSON.parse(stored);
+        const locKey = `${activeLocation.lat.toFixed(2)}_${activeLocation.lon.toFixed(2)}`;
+        if (parsed._locationKey !== locKey) return;
+        const ageMs = Date.now() - new Date(parsed._savedAt).getTime();
+        if (ageMs > 10 * 60 * 1000) return; // discard if > 10 min old
+        cachedNowSummary = parsed.summary;
+        cachedNowSummary._isStored = true;
+        cachedNowSummary._storedAgeMin = Math.floor(ageMs / 60000);
+    } catch (e) {
+        console.warn('[Nowcast] Failed to load stored state:', e.message);
+    }
+}
+
+// Save nowcast state to localStorage
+function saveNowcastState(summary, lat, lon) {
+    try {
+        localStorage.setItem(NOWCAST_STORAGE_KEY, JSON.stringify({
+            summary,
+            _locationKey: `${lat.toFixed(2)}_${lon.toFixed(2)}`,
+            _savedAt: new Date().toISOString()
+        }));
+    } catch (e) {
+        console.warn('[Nowcast] Failed to save state:', e.message);
     }
 }

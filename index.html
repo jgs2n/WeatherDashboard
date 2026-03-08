@@ -20,7 +20,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌤️</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
-    <link rel="stylesheet" href="css/styles.css?v=1.2.6">
+    <link rel="stylesheet" href="css/styles.css?v=1.2.8">
     <link rel="manifest" href="pwa/manifest.json">
 </head>
 <body>
@@ -71,6 +71,14 @@
         </div>
     </div>
 
+    <!-- Current Condition / Station Obs Detail Modal -->
+    <div class="pc-overlay" id="obsDetailOverlay" onclick="if(event.target===this)closeConditionDetail()">
+        <div class="obs-modal">
+            <button class="obs-modal-close" onclick="closeConditionDetail()">✕</button>
+            <div id="obsDetailBody"></div>
+        </div>
+    </div>
+
     <!-- Forecast Day Detail Modal -->
     <div class="forecast-detail-overlay" id="forecastDetailOverlay"
          onclick="if(event.target===this)closeForecastDetail()">
@@ -88,16 +96,20 @@
         </div>
     </div>
 
-    <script src="src/state/store.js"></script>
+    <script src="src/state/store.js?v=1.8.5"></script>
     <script src="src/utils/weatherCodes.js"></script>
     <script src="src/utils/risk.js?v=1.2.7"></script>
     <script src="src/utils/dom.js?v=0.6.0"></script>
     <script src="src/utils/moon.js"></script>
-    <script src="src/utils/format.js?v=0.8.5"></script>
+    <script src="src/utils/metarParse.js"></script>
+    <script src="src/utils/format.js?v=0.8.7"></script>
     <script src="src/services/geocode.js"></script>
     <script src="src/services/openMeteo.js"></script>
     <script src="src/services/nws.js"></script>
-    <script src="src/services/recentPrecip.js"></script>
+    <script src="src/services/recentPrecip.js?v=1.8.1"></script>
+    <script src="src/services/observations.js?v=1.8.1"></script>
+    <script src="src/services/radarSampler.js"></script>
+    <script src="src/services/nowcast.js"></script>
     <script src="src/ui/locationPicker.js"></script>
     <script src="src/ui/pressureChart.js"></script>
     <script src="src/ui/aqiChart.js?v=1.0.5"></script>
@@ -105,8 +117,8 @@
     <script src="src/ui/forecastModal.js"></script>
     <script src="src/ui/hourly.js"></script>
     <script src="src/ui/share.js"></script>
-    <script src="src/ui/renderDashboard.js?v=1.2.3"></script>
+    <script src="src/ui/renderDashboard.js?v=1.8.5"></script>
     <script src="src/ui/tabDrag.js?v=1.1.7"></script>
-    <script src="src/main.js"></script>
+    <script src="src/main.js?v=1.8.5"></script>
 </body>
 </html>
