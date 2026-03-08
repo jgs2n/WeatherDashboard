@@ -1,7 +1,9 @@
-const CACHE_NAME = 'weather-hq-v1.8.7';
+const CACHE_NAME = 'weather-hq-v1.8.9';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
+    'pwa/manifest.json',
+    'pwa/icon.svg',
     'src/state/store.js',
     'src/utils/weatherCodes.js',
     'src/utils/risk.js',

@@ -566,7 +566,7 @@ function estimateRainTiming(motionVector, currentDbz, isRaining) {
         if (!consistent) return NONE;
         if (!recentDbz.some(d => d >= RADAR_CFG.BEGIN_SIGNAL_DBZ)) return NONE;
 
-        const gapDbz = RADAR_CFG.ON_THRESHOLD - (currentDbz ?? 0);
+        const gapDbz = RADAR_CFG.ON_THRESHOLD - (currentDbz !== null && currentDbz !== undefined ? currentDbz : 0);
         if (gapDbz <= 0) return NONE;
 
         const beginInMin = Math.round((gapDbz / slope) * 5);
@@ -581,7 +581,7 @@ function estimateRainTiming(motionVector, currentDbz, isRaining) {
     if (!consistent) return NONE;
     if (!recentDbz.some(d => d >= RADAR_CFG.END_SIGNAL_DBZ)) return NONE;
 
-    const currentIntensity = currentDbz ?? RADAR_CFG.ON_THRESHOLD;
+    const currentIntensity = (currentDbz !== null && currentDbz !== undefined) ? currentDbz : RADAR_CFG.ON_THRESHOLD;
 
     // Already below OFF_THRESHOLD — hold timer is running
     if (currentIntensity <= RADAR_CFG.OFF_THRESHOLD) {

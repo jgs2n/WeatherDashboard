@@ -46,7 +46,7 @@ async function getNowSummary({ lat, lon, country }) {
         endInMin:     timing.endInMin,
         updatedAt:    radarState.timestamp,
         source:       [radarState.source],
-        confidence:   radarState.isRaining ? 'high' : (timing.confidence ?? 'low')
+        confidence:   radarState.isRaining ? 'high' : (timing.confidence || 'low')
     } : null;
 
     // Build thunder summary
