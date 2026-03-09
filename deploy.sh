@@ -9,7 +9,7 @@ fi
 
 git add -u                        # all modified tracked files
 git add about.html 2>/dev/null    # new files (silently skips if already tracked)
-git add src/services/nowcast.js src/services/observations.js src/services/radarSampler.js src/utils/metarParse.js 2>/dev/null
+git add src/services/nowcast.js src/services/observations.js src/services/radarSampler.js src/services/lightning.js src/utils/metarParse.js 2>/dev/null
 git add CLAUDE.md REFACTOR_PLAN.md deploy.sh serve.ps1 2>/dev/null
 
 git commit -m "$MSG"

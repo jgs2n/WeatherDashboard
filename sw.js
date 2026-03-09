@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.9.5';
+const CACHE_NAME = 'weather-hq-v1.10.0';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
@@ -17,6 +17,7 @@ const PRECACHE_URLS = [
     'src/services/recentPrecip.js',
     'src/services/observations.js',
     'src/services/radarSampler.js',
+    'src/services/lightning.js',
     'src/services/nowcast.js',
     'src/ui/locationPicker.js',
     'src/ui/pressureChart.js',

@@ -94,6 +94,68 @@ function renderRadarSection(location) {
     `;
 }
 
+// ─── Lightning line helpers ──────────────────────────────────────────────────
+// Used by both renderCurrentCard (initial HTML) and updateNowcastDisplay (in-place).
+
+function _lightningLineText(ls) {
+    if (!ls || ls.state === 'none') return null;
+
+    // METAR-only fallback wording (lightning WS unavailable)
+    if (ls.source === 'metar-fallback') return '\u26A1 Thunder reported nearby';
+
+    if (ls.state === 'active') {
+        if (ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
+            const d = Math.max(1, Math.round(ls.nearestStrikeMi));
+            return `\u26A1 Lightning within ${d} mi`;
+        }
+        return '\u26A1 Thunder nearby';
+    }
+    if (ls.state === 'nearby') return '\u26A1 Thunder nearby';
+    if (ls.state === 'approaching') {
+        // Motion-aware: "Storm approaching" vs "Distant lightning detected"
+        if ((ls.nearestStrikeMi != null && ls.nearestStrikeMi > 15) || ls.confidence === 'low') {
+            return '\u26A1 Distant lightning detected';
+        }
+        if (ls._isApproaching) return '\u26A1 Storm approaching';
+        return '\u26A1 Distant lightning detected';
+    }
+    return null;
+}
+
+// Apply lightning state to primary condition text.
+// active can promote to Thunderstorm; nearby can modify to "X — thunder nearby";
+// approaching never changes primary condition.
+function _applyLightningConditionOverride(displayCondition, precipPhenomenon, ls) {
+    if (!ls || ls.state === 'none' || ls.state === 'approaching') return displayCondition;
+    if (precipPhenomenon === 'thunderstorm') return displayCondition; // already correct
+
+    if (ls.state === 'active') {
+        if (precipPhenomenon === 'heavy rain' || precipPhenomenon === 'rain') {
+            return { desc: 'Thunderstorm', icon: '\u26C8\uFE0F' };
+        }
+        if (precipPhenomenon === 'drizzle') {
+            return { desc: 'Rain \u2014 thunder nearby', icon: '\u26C8\uFE0F' };
+        }
+        if (precipPhenomenon === 'snow') {
+            return { desc: 'Snow \u2014 thunder nearby', icon: '\uD83C\uDF28\uFE0F' };
+        }
+        if (precipPhenomenon === 'dry' && ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
+            return { desc: 'Thunder nearby', icon: '\u26C8\uFE0F' };
+        }
+    }
+
+    if (ls.state === 'nearby') {
+        if (precipPhenomenon === 'rain' || precipPhenomenon === 'heavy rain' || precipPhenomenon === 'drizzle') {
+            return { desc: 'Rain \u2014 thunder nearby', icon: displayCondition.icon };
+        }
+        if (precipPhenomenon === 'snow') {
+            return { desc: 'Snow \u2014 thunder nearby', icon: '\uD83C\uDF28\uFE0F' };
+        }
+    }
+
+    return displayCondition;
+}
+
 // ─── Sub-renderers ───────────────────────────────────────────────────────────
 
 // Swap the AQI placeholder with live data after a deferred retry
@@ -147,16 +209,23 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
         conditionSubtitle = '';
     }
 
+    // Lightning condition override — active/nearby can promote primary condition text
+    const _ls = nowSummary && nowSummary.lightningState;
+    const _precipPhenomenon = nowSummary && nowSummary.precipStateNow
+        ? nowSummary.precipStateNow.phenomenon : 'dry';
+    displayCondition = _applyLightningConditionOverride(displayCondition, _precipPhenomenon, _ls);
+
     // Build rain timing HTML — confidence-aware prose from precipTrend60m
     let rainTimingHTML = '';
     if (_trend && _trend.summary) {
         rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F ${_trend.summary}</div>`;
     }
 
-    // Build thunder HTML
+    // Build lightning line HTML (replaces old thunder line)
     let thunderHTML = '';
-    if (nowSummary && nowSummary.thunder && nowSummary.thunder.isThunderNow) {
-        thunderHTML = `<div class="nowcast-thunder-line">\u26C8\uFE0F Thunder within ${nowSummary.thunder.withinMi} mi</div>`;
+    const _lsLineText = _lightningLineText(nowSummary && nowSummary.lightningState);
+    if (_lsLineText) {
+        thunderHTML = `<div class="nowcast-thunder-line">${_lsLineText}</div>`;
     }
 
     const fireRisk = calculateFireRisk(current.temperature_2m, current.relative_humidity_2m, current.wind_speed_10m);
@@ -680,6 +749,17 @@ function updateNowcastDisplay(nowSummary) {
     }
     // else: leave icon/desc at model values from initial render (no update)
 
+    // Lightning condition override (same logic as renderCurrentCard)
+    const _ls2 = nowSummary.lightningState;
+    const _precipPhen = nowSummary.precipStateNow ? nowSummary.precipStateNow.phenomenon : 'dry';
+    if (_displayDesc !== null && _ls2) {
+        const _overridden = _applyLightningConditionOverride(
+            { desc: _displayDesc, icon: _displayIcon }, _precipPhen, _ls2
+        );
+        _displayDesc = _overridden.desc;
+        _displayIcon = _overridden.icon;
+    }
+
     if (_displayDesc !== null) {
         if (condEl) condEl.textContent = _displayDesc;
         if (iconEl) iconEl.textContent = _displayIcon;
@@ -704,15 +784,16 @@ function updateNowcastDisplay(nowSummary) {
         rainEl.style.display = 'none';
     }
 
-    // Thunder line — find or create element
+    // Lightning line — find or create element
     let thunderEl = document.querySelector('.nowcast-thunder-line');
-    if (nowSummary.thunder && nowSummary.thunder.isThunderNow) {
+    const _lsText = _lightningLineText(nowSummary.lightningState);
+    if (_lsText) {
         if (!thunderEl && iconWrap) {
             thunderEl = document.createElement('div');
             thunderEl.className = 'nowcast-thunder-line';
             iconWrap.appendChild(thunderEl);
         }
-        if (thunderEl) { thunderEl.textContent = '\u26C8\uFE0F Thunder within ' + nowSummary.thunder.withinMi + ' mi'; thunderEl.style.display = ''; }
+        if (thunderEl) { thunderEl.textContent = _lsText; thunderEl.style.display = ''; }
     } else if (thunderEl) {
         thunderEl.style.display = 'none';
     }

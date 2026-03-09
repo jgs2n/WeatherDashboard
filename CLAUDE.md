@@ -36,6 +36,11 @@ A lightweight weather dashboard (vanilla JS, no frameworks, no build step). Supp
 - `airQuality.js` — AQI fetch + normalize
 - `modelComparison.js` — model spread fetch + normalize
 - `geocode.js` — location search + normalize
+- `lightning.js` — Blitzortung WebSocket, rolling 30-min strike buffer, `summarizeLightningBuffer()`
+- `nowcast.js` — orchestrator: sky state, precip now, precip trend, lightning state (merged)
+- `radarSampler.js` — radar tile loading, pixel sampling, hysteresis, motion vectors
+- `observations.js` — NWS station observation fetch + parsing
+- `recentPrecip.js` — historical rain accumulation
 
 ### UI
 - `renderDashboard.js` — main render pipeline

@@ -1,16 +1,16 @@
 // Nowcast Service — orchestrator
-// Produces three separate nowcast products per poll cycle:
+// Produces four nowcast products per poll cycle:
 //   skyState       — background atmospheric state (overcast, fog, clear, etc.)
 //   precipStateNow — is it precipitating right now? (radar-primary)
 //   precipTrend60m — 0–60 min precipitation timeline + confidence-aware summary
-// Plus the unchanged thunder product.
+//   lightningState — merged lightning (Blitzortung) + METAR thunder + radar context
 //
 // Exports (globals): getNowSummary, startNowcastPolling, stopNowcastPolling
 
 /**
  * Get a fused nowcast summary for a location.
  * @param {{ lat:number, lon:number, country:string }} loc
- * @returns {Promise<{ skyState, precipStateNow, precipTrend60m, thunder }>}
+ * @returns {Promise<{ skyState, precipStateNow, precipTrend60m, lightningState }>}
  */
 async function getNowSummary({ lat, lon, country }) {
     const isUS = country === 'United States';
@@ -28,10 +28,7 @@ async function getNowSummary({ lat, lon, country }) {
         console.warn('[Nowcast] Radar sampling failed:', err.message);
     }
 
-    // Thunder detection — unchanged logic, unchanged output key
-    const thunderResult = _detectThunderFromSources(obs, radarState);
-
-    // Motion vector (used by estimateRainTiming fallback path in _computePrecipTrend60m)
+    // Motion vector (used by precip trend + lightning approaching detection)
     let motion = null;
     try {
         motion = await estimateMotionVector(lat, lon, isUS);
@@ -42,21 +39,13 @@ async function getNowSummary({ lat, lon, country }) {
     const currentDbz = radarState ? radarState.dbz : null;
     const isRaining  = radarState ? radarState.isRaining : false;
 
-    // Three separate products
+    // Four products
     const skyState       = _computeSkyState(obs, country);
     const precipStateNow = _computePrecipNow(obs, radarState, country);
     const precipTrend60m = _computePrecipTrend60m(currentDbz, isRaining, motion);
+    const lightningState = _computeLightningState(lat, lon, obs, radarState, motion);
 
-    // Thunder — shape unchanged for backward compat
-    const thunder = {
-        isThunderNow: thunderResult.isThunder,
-        withinMi:     thunderResult.isThunder ? 10 : null,
-        updatedAt:    obs && obs.obs ? obs.obs.timestamp : (radarState ? radarState.timestamp : new Date().toISOString()),
-        source:       [thunderResult.source],
-        confidence:   thunderResult.confidence
-    };
-
-    return { skyState, precipStateNow, precipTrend60m, thunder };
+    return { skyState, precipStateNow, precipTrend60m, lightningState };
 }
 
 // ── Thunder helper ───────────────────────────────────────────────────────────
@@ -66,6 +55,89 @@ function _detectThunderFromSources(obs, radarState) {
     const text = obs && obs.obs ? obs.obs.textDescription : null;
     const dbz = radarState ? radarState.dbz : null;
     return detectThunder(pw, text, dbz);
+}
+
+// ── Lightning State (merged: Blitzortung + METAR + radar context) ─────────────
+// Merges three sources into a single lightningState object.
+// Lightning (Blitzortung) is primary truth; METAR is fallback/confirmation;
+// radar dBZ alone never promotes to thunderstorm.
+
+function _computeLightningState(lat, lon, obs, radarState, motion) {
+    // 1. Base classification from Blitzortung buffer
+    const lx = typeof summarizeLightningBuffer === 'function'
+        ? summarizeLightningBuffer(lat, lon)
+        : _emptyLightningState();
+
+    // 2. METAR thunder signal (for merge confirmation / fallback)
+    const metar = _detectThunderFromSources(obs, radarState);
+    const metarAge = obs && obs.obs ? metarAgeMinutes(obs.obs.timestamp) : Infinity;
+    // Only explicit METAR TS codes (not radar-inferred) qualify for fallback path
+    const metarExplicit = metar.isThunder && metar.source === 'METAR';
+
+    let state = lx.state;
+    let confidence = lx.confidence;
+    let source = lx.state !== 'none' ? 'lightning' : 'none';
+    let nearestMi = lx.nearestStrikeMi;
+
+    // ── Rule 1: Lightning ≤ 10 mi + METAR confirms → promote to active, high
+    if (lx.strikeCounts.within10mi > 0 && metar.isThunder) {
+        state = 'active';
+        confidence = 'high';
+        source = 'merged';
+    }
+    // ── Confidence boost: lightning + METAR agree at any distance
+    else if (state !== 'none' && metar.isThunder) {
+        confidence = 'high';
+        source = 'merged';
+    }
+
+    // ── Rules 5-6: No lightning data + explicit METAR TS → fallback
+    if (state === 'none' && metarExplicit) {
+        if (metarAge < 20) {
+            state = 'nearby';
+            confidence = 'medium';
+            source = 'metar-fallback';
+            nearestMi = 10;
+        } else if (metarAge < 45) {
+            state = 'nearby';
+            confidence = 'low';
+            source = 'metar-fallback';
+            nearestMi = 10;
+        }
+    }
+
+    // ── Motion-aware approaching: motion vector indicates organized storm movement
+    let isApproaching = false;
+    if (state === 'approaching' && motion && motion.speed_kmh > 10) {
+        isApproaching = true;
+    }
+
+    return {
+        state,
+        nearestStrikeMi: nearestMi,
+        strikeCounts: lx.strikeCounts,
+        updatedAt: lx.updatedAt,
+        source,
+        confidence,
+        wsConnected: lx.wsConnected,
+        bufferAgeMs: lx.bufferAgeMs,
+        lastStrikeAt: lx.lastStrikeAt,
+        _isApproaching: isApproaching,
+    };
+}
+
+function _emptyLightningState() {
+    return {
+        state: 'none',
+        nearestStrikeMi: null,
+        strikeCounts: { within5mi: 0, within10mi: 0, within20mi: 0 },
+        updatedAt: new Date().toISOString(),
+        source: 'unavailable',
+        confidence: 'none',
+        wsConnected: false,
+        bufferAgeMs: null,
+        lastStrikeAt: null,
+    };
 }
 
 // ── Product 1: Sky State ──────────────────────────────────────────────────────
@@ -221,7 +293,8 @@ function _computePollInterval(summary) {
     if (!summary) return POLL_DEFAULT_MS;
     const isRaining = summary.precipStateNow && summary.precipStateNow.phenomenon !== 'dry';
     const rainSoon  = summary.precipTrend60m && summary.precipTrend60m.beginInMin !== null && summary.precipTrend60m.beginInMin < 30;
-    if (isRaining || rainSoon) return POLL_ACTIVE_MS;
+    const lightningActive = summary.lightningState && summary.lightningState.state !== 'none';
+    if (isRaining || rainSoon || lightningActive) return POLL_ACTIVE_MS;
     return POLL_DRY_MS;
 }
 

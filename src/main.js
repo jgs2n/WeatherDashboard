@@ -165,8 +165,9 @@ function switchLocation(index) {
         return;
     }
     if (touchDragState.editMode) exitEditMode();
-    // Stop nowcast polling for old location + reset radar state
+    // Stop nowcast polling + lightning WS for old location + reset radar state
     stopNowcastPolling();
+    if (typeof stopLightning === 'function') stopLightning();
     if (typeof resetRadarState === 'function') resetRadarState();
     activeLocation = savedLocations[index];
     saveLocations();
@@ -353,8 +354,9 @@ async function fetchWeatherData() {
         saveNowcastState(nowSummary, location.lat, location.lon);
         renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
 
-        // Start nowcast polling
+        // Start nowcast polling + lightning WebSocket
         startNowcastPolling(location.lat, location.lon, location.country);
+        if (typeof startLightning === 'function') startLightning(location.lat, location.lon);
 
         // Deferred AQI retry — if the initial fetch failed, try once more after 2s
         if (!airQualityData) {
@@ -398,8 +400,9 @@ async function fetchWeatherDataDirect(lat, lon, location) {
         saveNowcastState(nowSummary, lat, lon);
         renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
 
-        // Start nowcast polling (independent of full dashboard refresh)
+        // Start nowcast polling + lightning WebSocket
         startNowcastPolling(lat, lon, location.country);
+        if (typeof startLightning === 'function') startLightning(lat, lon);
 
         if (!airQualityData) {
             setTimeout(async () => {
