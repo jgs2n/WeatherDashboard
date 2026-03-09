@@ -31,51 +31,62 @@
     var DM = window.matchMedia('(display-mode: standalone)').matches;
     if (!SA && !DM) return;
 
-    var probe = document.createElement('div');
-    probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;'
-        + 'padding-left:env(safe-area-inset-left,0px);'
-        + 'padding-right:env(safe-area-inset-right,0px);visibility:hidden;';
-    document.body.appendChild(probe);
-
     var snapshots = [];
+    var mutCount = 0;
 
     function measure(label) {
         var de = document.documentElement;
-        var appShell = document.getElementById('appShell');
+        var shell = document.getElementById('appShell');
         var wc = document.getElementById('weatherContainer');
-        var probeCS = getComputedStyle(probe);
+        var vv = window.visualViewport;
+
+        var htmlR = de.getBoundingClientRect();
+        var shellR = shell ? shell.getBoundingClientRect() : null;
+        var bodyR = document.body.getBoundingClientRect();
 
         var snap = {
             t: label,
+            // Layout viewport
             innerW: window.innerWidth,
             clientW: de.clientWidth,
             scrollW: de.scrollWidth,
             screenW: screen.width,
-            bodyW: document.body ? document.body.offsetWidth : '?',
-            bodyCS: document.body ? getComputedStyle(document.body).width : '?',
-            bodyPad: document.body ? getComputedStyle(document.body).padding : '?',
-            shellW: appShell ? appShell.offsetWidth : '?',
-            shellCS: appShell ? getComputedStyle(appShell).width : '?',
-            shellPad: appShell ? getComputedStyle(appShell).padding : '?',
+            // Visual viewport (the key new data)
+            vvW: vv ? Math.round(vv.width * 100) / 100 : '?',
+            vvH: vv ? Math.round(vv.height) : '?',
+            vvScale: vv ? Math.round(vv.scale * 1000) / 1000 : '?',
+            vvOffL: vv ? Math.round(vv.offsetLeft * 100) / 100 : '?',
+            vvPageL: vv ? Math.round(vv.pageLeft * 100) / 100 : '?',
+            // Device pixel ratio
+            dpr: window.devicePixelRatio,
+            // BoundingClientRect positions
+            htmlX: Math.round(htmlR.x * 100) / 100,
+            htmlW: Math.round(htmlR.width * 100) / 100,
+            bodyX: Math.round(bodyR.x * 100) / 100,
+            bodyW: Math.round(bodyR.width * 100) / 100,
+            shellX: shellR ? Math.round(shellR.x * 100) / 100 : '?',
+            shellW: shellR ? Math.round(shellR.width * 100) / 100 : '?',
+            shellR: shellR ? Math.round(shellR.right * 100) / 100 : '?',
             wcW: wc ? wc.offsetWidth : '?',
-            safeL: probeCS.paddingLeft,
-            safeR: probeCS.paddingRight,
-            dmMatch: window.matchMedia('(display-mode: standalone)').matches,
-            overflows: []
+            // Overflow scan — find widest elements via BCR
+            wide: []
         };
 
-        var all = document.querySelectorAll('*');
+        // Find elements whose BCR right edge exceeds visual viewport
+        var threshold = vv ? vv.width : window.innerWidth;
+        var all = document.querySelectorAll('body *');
         for (var i = 0; i < all.length; i++) {
             var el = all[i];
-            if (el.offsetWidth > snap.innerW + 2) {
+            if (el.id === 'pwa-diag') continue;
+            var r = el.getBoundingClientRect();
+            if (r.right > threshold + 2 && r.width > 0) {
                 var id = el.id || '';
-                var cls = el.className || '';
-                var tag = el.tagName;
-                snap.overflows.push(tag
-                    + (id ? '#' + id : '')
-                    + (cls ? '.' + String(cls).split(' ')[0] : '')
-                    + '=' + el.offsetWidth + 'px');
-                if (snap.overflows.length >= 8) break;
+                var cls = el.className ? String(el.className).split(' ')[0] : '';
+                snap.wide.push(
+                    el.tagName + (id ? '#' + id : '') + (cls ? '.' + cls : '')
+                    + ' r=' + Math.round(r.right) + ' w=' + Math.round(r.width)
+                );
+                if (snap.wide.length >= 5) break;
             }
         }
 
@@ -84,11 +95,12 @@
         render();
     }
 
+    // Overlay UI
     var overlay = document.createElement('div');
     overlay.id = 'pwa-diag';
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;'
-        + 'background:rgba(0,0,0,0.88);color:#0f0;font:10px/1.4 monospace;'
-        + 'padding:8px;max-height:60vh;overflow-y:auto;'
+        + 'background:rgba(0,0,0,0.92);color:#0f0;font:9.5px/1.35 monospace;'
+        + 'padding:6px 8px;max-height:55vh;overflow-y:auto;'
         + '-webkit-overflow-scrolling:touch;';
     document.body.appendChild(overlay);
 
@@ -103,34 +115,102 @@
     });
 
     function render() {
-        var h = '<b>PWA VIEWPORT DIAG</b>  (tap to hide)<br>';
+        var h = '<b>PWA DIAG v2</b> (tap hide)<br>';
         for (var i = 0; i < snapshots.length; i++) {
             var s = snapshots[i];
-            var over = s.scrollW > s.clientW;
-            h += '<br><b style="color:' + (over ? '#f55' : '#0f0') + '">'
-                + s.t + (over ? ' ⚠ OVERFLOW' : ' ✓') + '</b><br>';
-            h += 'inner=' + s.innerW + ' client=' + s.clientW
-                + ' scroll=' + s.scrollW + ' screen=' + s.screenW + '<br>';
-            h += 'body: w=' + s.bodyW + ' cs=' + s.bodyCS
-                + ' pad=' + s.bodyPad + '<br>';
-            h += 'shell: w=' + s.shellW + ' cs=' + s.shellCS
-                + ' pad=' + s.shellPad + '<br>';
-            h += 'wc: w=' + s.wcW + '<br>';
-            h += 'safe: L=' + s.safeL + ' R=' + s.safeR
-                + ' dm=' + s.dmMatch + '<br>';
-            if (s.overflows.length) {
-                h += '<span style="color:#f55">WIDE: '
-                    + s.overflows.join(', ') + '</span><br>';
+            var scaleOk = s.vvScale === 1 || s.vvScale === '?';
+            var vwOk = s.vvW === s.innerW || s.vvW === '?';
+            var posOk = s.htmlX === 0;
+            var ok = scaleOk && vwOk && posOk && s.wide.length === 0;
+            var c = ok ? '#0f0' : '#f55';
+
+            h += '<br><b style="color:' + c + '">' + s.t
+                + (ok ? ' ✓' : ' ⚠') + '</b><br>';
+            h += 'layout: ' + s.innerW + 'x' + (s.vvH !== '?' ? s.vvH : '?')
+                + ' scroll=' + s.scrollW + ' scr=' + s.screenW + '<br>';
+
+            // Visual viewport line — the key data
+            var vvColor = (scaleOk && vwOk) ? '#0f0' : '#ff0';
+            h += '<span style="color:' + vvColor + '">visual: w='
+                + s.vvW + ' scale=' + s.vvScale
+                + ' offL=' + s.vvOffL + ' pgL=' + s.vvPageL + '</span><br>';
+
+            h += 'dpr=' + s.dpr
+                + ' html.x=' + s.htmlX + ' html.w=' + s.htmlW + '<br>';
+            h += 'body.x=' + s.bodyX + ' body.w=' + s.bodyW + '<br>';
+            h += 'shell.x=' + s.shellX + ' shell.w=' + s.shellW
+                + ' shell.r=' + s.shellR + '<br>';
+            h += 'wc=' + s.wcW + '<br>';
+
+            if (s.wide.length) {
+                h += '<span style="color:#f55">WIDE:<br>';
+                for (var j = 0; j < s.wide.length; j++) {
+                    h += '  ' + s.wide[j] + '<br>';
+                }
+                h += '</span>';
             }
         }
         overlay.innerHTML = h;
     }
 
+    // Timed snapshots
     measure('T0-immediate');
     requestAnimationFrame(function() { measure('T1-rAF'); });
     setTimeout(function() { measure('T2-100ms'); }, 100);
     setTimeout(function() { measure('T3-500ms'); }, 500);
     setTimeout(function() { measure('T4-2s'); }, 2000);
+
+    // MutationObserver — capture when weather content renders
+    var obsTarget = document.getElementById('weatherContainer');
+    if (obsTarget) {
+        var mo = new MutationObserver(function() {
+            mutCount++;
+            if (mutCount <= 3) {
+                measure('MUT-' + mutCount);
+                // Also measure 100ms after mutation settles
+                setTimeout(function() { measure('MUT-' + mutCount + '+100'); }, 100);
+            }
+        });
+        mo.observe(obsTarget, { childList: true, subtree: true });
+    }
+    // Fallback: observe body if weatherContainer not yet in DOM
+    if (!obsTarget) {
+        var bodyMo = new MutationObserver(function() {
+            var wc = document.getElementById('weatherContainer');
+            if (wc && !wc._diagObserved) {
+                wc._diagObserved = true;
+                var mo2 = new MutationObserver(function() {
+                    mutCount++;
+                    if (mutCount <= 3) {
+                        measure('MUT-' + mutCount);
+                        setTimeout(function() { measure('MUT-' + mutCount + '+100'); }, 100);
+                    }
+                });
+                mo2.observe(wc, { childList: true, subtree: true });
+            }
+        });
+        bodyMo.observe(document.body, { childList: true, subtree: false });
+    }
+
+    // Resize listener — captures when iOS "corrects" the viewport
+    var resizeCount = 0;
+    window.addEventListener('resize', function() {
+        resizeCount++;
+        if (resizeCount <= 3) {
+            measure('RESIZE-' + resizeCount);
+        }
+    });
+
+    // VisualViewport resize (separate from window resize)
+    if (window.visualViewport) {
+        var vvResizeCount = 0;
+        window.visualViewport.addEventListener('resize', function() {
+            vvResizeCount++;
+            if (vvResizeCount <= 3) {
+                measure('VV-RESIZE-' + vvResizeCount);
+            }
+        });
+    }
 })();
 </script>
     <div id="appShell">
