@@ -97,8 +97,11 @@ function onTouchStart(e) {
     touchDragState.longPressTouch = { clientX: touch.clientX, clientY: touch.clientY };
 
     // If already in edit mode, suppress native callout and let onTouchMove start drag immediately
+    // But allow taps on the remove button to pass through as clicks
     if (touchDragState.editMode) {
-        e.preventDefault();
+        if (!e.target.closest('.remove-btn')) {
+            e.preventDefault();
+        }
         return;
     }
 
@@ -158,9 +161,12 @@ function onTouchEnd(e) {
 
     // If in edit mode (long press fired, no drag), stay in edit mode
     // The X buttons are now visible for the user to tap
+    // Allow taps on the remove button to pass through as clicks
     if (touchDragState.editMode) {
-        e.preventDefault();
-        e.stopPropagation();
+        if (!e.target.closest('.remove-btn')) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
         return;
     }
 }

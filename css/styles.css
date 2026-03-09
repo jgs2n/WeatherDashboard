@@ -3447,10 +3447,7 @@ body {
 @media (max-width: 600px) {
     .alm-content {
         max-height: 92vh;
-        border-radius: 16px 16px 0 0;
-        margin-top: auto;
     }
-    .alm-overlay { align-items: flex-end; padding: 0; }
     .alm-header { padding: 1rem 1.25rem 0.75rem; }
     .alm-gps-section { padding: 1rem 1.25rem 0.5rem; }
     .alm-search-section { padding: 0 1.25rem; }
