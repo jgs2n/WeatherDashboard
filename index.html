@@ -25,6 +25,114 @@
     <link rel="apple-touch-icon" href="pwa/icon.svg">
 </head>
 <body>
+<script>
+(function() {
+    var SA = window.navigator.standalone === true;
+    var DM = window.matchMedia('(display-mode: standalone)').matches;
+    if (!SA && !DM) return;
+
+    var probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;'
+        + 'padding-left:env(safe-area-inset-left,0px);'
+        + 'padding-right:env(safe-area-inset-right,0px);visibility:hidden;';
+    document.body.appendChild(probe);
+
+    var snapshots = [];
+
+    function measure(label) {
+        var de = document.documentElement;
+        var appShell = document.getElementById('appShell');
+        var wc = document.getElementById('weatherContainer');
+        var probeCS = getComputedStyle(probe);
+
+        var snap = {
+            t: label,
+            innerW: window.innerWidth,
+            clientW: de.clientWidth,
+            scrollW: de.scrollWidth,
+            screenW: screen.width,
+            bodyW: document.body ? document.body.offsetWidth : '?',
+            bodyCS: document.body ? getComputedStyle(document.body).width : '?',
+            bodyPad: document.body ? getComputedStyle(document.body).padding : '?',
+            shellW: appShell ? appShell.offsetWidth : '?',
+            shellCS: appShell ? getComputedStyle(appShell).width : '?',
+            shellPad: appShell ? getComputedStyle(appShell).padding : '?',
+            wcW: wc ? wc.offsetWidth : '?',
+            safeL: probeCS.paddingLeft,
+            safeR: probeCS.paddingRight,
+            dmMatch: window.matchMedia('(display-mode: standalone)').matches,
+            overflows: []
+        };
+
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (el.offsetWidth > snap.innerW + 2) {
+                var id = el.id || '';
+                var cls = el.className || '';
+                var tag = el.tagName;
+                snap.overflows.push(tag
+                    + (id ? '#' + id : '')
+                    + (cls ? '.' + String(cls).split(' ')[0] : '')
+                    + '=' + el.offsetWidth + 'px');
+                if (snap.overflows.length >= 8) break;
+            }
+        }
+
+        snapshots.push(snap);
+        console.log('[PWA-DIAG] ' + label, JSON.stringify(snap));
+        render();
+    }
+
+    var overlay = document.createElement('div');
+    overlay.id = 'pwa-diag';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;'
+        + 'background:rgba(0,0,0,0.88);color:#0f0;font:10px/1.4 monospace;'
+        + 'padding:8px;max-height:60vh;overflow-y:auto;'
+        + '-webkit-overflow-scrolling:touch;';
+    document.body.appendChild(overlay);
+
+    var hidden = false;
+    overlay.addEventListener('click', function(e) {
+        e.stopPropagation();
+        hidden = !hidden;
+        overlay.style.display = hidden ? 'none' : 'block';
+    });
+    document.addEventListener('click', function() {
+        if (hidden) { hidden = false; overlay.style.display = 'block'; }
+    });
+
+    function render() {
+        var h = '<b>PWA VIEWPORT DIAG</b>  (tap to hide)<br>';
+        for (var i = 0; i < snapshots.length; i++) {
+            var s = snapshots[i];
+            var over = s.scrollW > s.clientW;
+            h += '<br><b style="color:' + (over ? '#f55' : '#0f0') + '">'
+                + s.t + (over ? ' ⚠ OVERFLOW' : ' ✓') + '</b><br>';
+            h += 'inner=' + s.innerW + ' client=' + s.clientW
+                + ' scroll=' + s.scrollW + ' screen=' + s.screenW + '<br>';
+            h += 'body: w=' + s.bodyW + ' cs=' + s.bodyCS
+                + ' pad=' + s.bodyPad + '<br>';
+            h += 'shell: w=' + s.shellW + ' cs=' + s.shellCS
+                + ' pad=' + s.shellPad + '<br>';
+            h += 'wc: w=' + s.wcW + '<br>';
+            h += 'safe: L=' + s.safeL + ' R=' + s.safeR
+                + ' dm=' + s.dmMatch + '<br>';
+            if (s.overflows.length) {
+                h += '<span style="color:#f55">WIDE: '
+                    + s.overflows.join(', ') + '</span><br>';
+            }
+        }
+        overlay.innerHTML = h;
+    }
+
+    measure('T0-immediate');
+    requestAnimationFrame(function() { measure('T1-rAF'); });
+    setTimeout(function() { measure('T2-100ms'); }, 100);
+    setTimeout(function() { measure('T3-500ms'); }, 500);
+    setTimeout(function() { measure('T4-2s'); }, 2000);
+})();
+</script>
     <div id="appShell">
     <div class="header">
         <h1>WEATHER COMMAND CENTER</h1>
