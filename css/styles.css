@@ -511,6 +511,8 @@ body {
     align-items: flex-start;
     justify-content: space-between;
     margin-bottom: 1.5rem;
+    overflow: hidden;
+    max-width: 100%;
 }
 
 .temperature {
@@ -521,6 +523,7 @@ body {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    min-width: 0;
 }
 
 .weather-icon-wrap {
@@ -528,6 +531,8 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 0.2rem;
+    min-width: 0;
+    max-width: 50%;
 }
 
 .weather-condition {
@@ -554,6 +559,10 @@ body {
     text-align: right;
     letter-spacing: 0.02rem;
     margin-top: 0.2rem;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .nowcast-thunder-line {
@@ -563,6 +572,10 @@ body {
     letter-spacing: 0.02rem;
     margin-top: 0.15rem;
     font-weight: 600;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .weather-icon {
@@ -3411,6 +3424,17 @@ body {
 
 .alm-coord-input::placeholder { color: var(--text-secondary); font-size: 0.78rem; }
 .alm-name-input::placeholder { color: var(--text-secondary); }
+
+/* Welcome card — embedded location picker */
+.welcome-card .alm-gps-section,
+.welcome-card .alm-search-section,
+.welcome-card .alm-coords-section,
+.welcome-card .alm-divider {
+    text-align: left;
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+}
 
 /* Shake animation for validation error */
 @keyframes shake {

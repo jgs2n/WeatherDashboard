@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: ./deploy.sh "Your commit message"
-# Stages all tracked changes + any new project files, commits, and pushes.
+# Stages all project files, commits, and pushes.
 
 MSG="${1}"
 if [ -z "$MSG" ]; then
@@ -8,9 +8,9 @@ if [ -z "$MSG" ]; then
 fi
 
 git add -u                        # all modified tracked files
-git add about.html 2>/dev/null    # new files (silently skips if already tracked)
-git add src/services/nowcast.js src/services/observations.js src/services/radarSampler.js src/services/lightning.js src/utils/metarParse.js 2>/dev/null
-git add CLAUDE.md REFACTOR_PLAN.md deploy.sh serve.ps1 2>/dev/null
+git add src/**/*.js 2>/dev/null   # any new/untracked JS in src/
+git add css/ docs/ pwa/ 2>/dev/null
+git add index.html about.html sw.js CLAUDE.md deploy.sh serve.ps1 2>/dev/null
 
 git commit -m "$MSG"
 git push

@@ -435,56 +435,237 @@ function init() {
         // Show welcome message for new users
         const container = document.getElementById('weatherContainer');
         container.innerHTML = `
-            <div class="card" style="text-align: center; padding: 2rem 1.5rem;">
+            <div class="card welcome-card" style="text-align: center; padding: 2rem 1.5rem;">
                 <div style="font-size: 4rem; margin-bottom: 1rem;">🌤️</div>
                 <h2 style="font-family: 'Bebas Neue', cursive; font-size: clamp(1.8rem, 5vw, 2.5rem); color: var(--accent-primary); margin-bottom: 1rem; letter-spacing: 0.1rem;">Welcome to Weather Command Center</h2>
-                <p style="font-size: clamp(0.85rem, 2.5vw, 1.1rem); color: var(--text-secondary); margin-bottom: 2rem; line-height: 1.6;">
-                    Get started by adding your first location.<br>
-                    Click the <span style="color: var(--accent-primary); font-weight: 600;">+ Add Location</span> button above, or enter a location below.
+                <p style="font-size: clamp(0.85rem, 2.5vw, 1.1rem); color: var(--text-secondary); margin-bottom: 1.5rem; line-height: 1.6;">
+                    Get started by adding your first location.
                 </p>
-                <div style="display: flex; gap: 0.75rem; justify-content: center; align-items: center; flex-wrap: wrap;">
-                    <input type="text" id="welcomeInput" class="location-input" placeholder="Enter your location (e.g., Miami, Portland)" style="max-width: 400px; width: 100%; font-size: 16px;">
-                    <button onclick="addFirstLocation()" class="btn">Get Started</button>
+
+                <div class="alm-gps-section">
+                    <button class="alm-gps-btn" id="welcomeGpsBtn">📍 Use My Location</button>
+                    <div class="alm-gps-confirm" id="welcomeGpsConfirm">
+                        <div class="alm-confirm-label">📍 Detected — edit name if you like</div>
+                        <div class="alm-confirm-row">
+                            <input type="text" class="alm-name-input" id="welcomeGpsName" placeholder="Location name">
+                            <button class="alm-add-btn" id="welcomeGpsAdd">Add</button>
+                        </div>
+                        <button class="alm-cancel-link" id="welcomeGpsCancel">Cancel</button>
+                    </div>
+                </div>
+
+                <div class="alm-divider"><span>or search by name</span></div>
+
+                <div class="alm-search-section">
+                    <input type="text" class="alm-search-input" id="welcomeSearchInput"
+                           placeholder="City, region, or place…"
+                           autocomplete="off" autocorrect="off" spellcheck="false">
+                    <div class="alm-results" id="welcomeResults"></div>
+                </div>
+
+                <div class="alm-coords-section">
+                    <button class="alm-coords-toggle" id="welcomeCoordsToggle">▸ Enter coordinates</button>
+                    <div class="alm-coords-form" id="welcomeCoordsForm">
+                        <div class="alm-coords-row">
+                            <input type="number" class="alm-coord-input" id="welcomeLat"
+                                   placeholder="Latitude" step="any" min="-90" max="90">
+                            <input type="number" class="alm-coord-input" id="welcomeLon"
+                                   placeholder="Longitude" step="any" min="-180" max="180">
+                        </div>
+                        <input type="text" class="alm-name-input" id="welcomeCoordsName"
+                               placeholder="Label (optional — reverse geocoded if blank)">
+                        <button class="alm-add-btn" id="welcomeCoordsAdd">Add Location</button>
+                    </div>
                 </div>
             </div>
         `;
+        wireWelcomeEvents();
     }
 }
 
-// Add first location from welcome screen
-async function addFirstLocation() {
-    const input = document.getElementById('welcomeInput');
-    const locationName = input ? input.value.trim() : '';
+// Wire welcome screen interactive elements
+function wireWelcomeEvents() {
+    let gpsCoords = null;
+    let debounceTimer = null;
+    const searchCache = new Map();
 
-    if (!locationName) {
-        alert('Please enter a location name');
-        return;
-    }
-
-    try {
-        const geocodeResult = await geocodeLocation(locationName);
-        const location = Array.isArray(geocodeResult)
-            ? await showLocationPicker(geocodeResult)
-            : geocodeResult;
-
+    function saveAndFetch(loc) {
+        clearTimeout(debounceTimer);
         const newLocation = {
-            name: location.name,
-            displayName: extractDisplayName(location.name),
-            lat: location.lat,
-            lon: location.lon,
-            country: location.country
+            name: loc.name,
+            displayName: extractDisplayName(loc.name),
+            lat: loc.lat,
+            lon: loc.lon,
+            country: loc.country
         };
-
         savedLocations.push(newLocation);
         activeLocation = newLocation;
         saveLocations();
         renderTabs();
-        fetchWeatherDataDirect(location.lat, location.lon, location);
-    } catch (error) {
-        if (error.message !== 'Location selection cancelled') {
-            alert('Error: ' + error.message);
+        fetchWeatherDataDirect(loc.lat, loc.lon, loc);
+    }
+
+    // ── GPS ──
+    const gpsBtn = document.getElementById('welcomeGpsBtn');
+    const gpsConfirm = document.getElementById('welcomeGpsConfirm');
+    const gpsNameInput = document.getElementById('welcomeGpsName');
+
+    gpsBtn.onclick = () => {
+        if (!navigator.geolocation) {
+            gpsBtn.textContent = 'Not supported on this device';
+            return;
+        }
+        gpsBtn.textContent = '⏳ Detecting…';
+        gpsBtn.disabled = true;
+
+        navigator.geolocation.getCurrentPosition(
+            async pos => {
+                const lat = parseFloat(pos.coords.latitude.toFixed(6));
+                const lon = parseFloat(pos.coords.longitude.toFixed(6));
+                gpsCoords = { lat, lon, country: null };
+
+                const rev = await reverseGeocodeLocation(lat, lon);
+                gpsCoords.country = rev ? rev.country : null;
+                gpsNameInput.value = rev ? rev.name : 'My Location';
+
+                gpsBtn.style.display = 'none';
+                gpsConfirm.classList.add('visible');
+                gpsNameInput.focus();
+                gpsNameInput.select();
+            },
+            err => {
+                console.warn('Geolocation error:', err);
+                gpsBtn.textContent = '📍 Use My Location';
+                gpsBtn.disabled = false;
+            },
+            { timeout: 10000, maximumAge: 60000 }
+        );
+    };
+
+    document.getElementById('welcomeGpsAdd').onclick = () => {
+        if (!gpsCoords) return;
+        const name = gpsNameInput.value.trim() || 'My Location';
+        saveAndFetch({ lat: gpsCoords.lat, lon: gpsCoords.lon, name, country: gpsCoords.country });
+    };
+
+    gpsNameInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('welcomeGpsAdd').click();
+    });
+
+    document.getElementById('welcomeGpsCancel').onclick = () => {
+        gpsCoords = null;
+        gpsConfirm.classList.remove('visible');
+        gpsBtn.style.display = '';
+        gpsBtn.textContent = '📍 Use My Location';
+        gpsBtn.disabled = false;
+    };
+
+    // ── Search ──
+    const searchInput = document.getElementById('welcomeSearchInput');
+    const resultsEl = document.getElementById('welcomeResults');
+
+    function renderResults(results) {
+        if (!results.length) {
+            resultsEl.innerHTML = '<div class="alm-no-results">No locations found</div>';
+            return;
+        }
+        resultsEl.innerHTML = results.map((r, i) => {
+            const parts = [r.name];
+            if (r.admin1 && r.admin1 !== r.name) parts.push(r.admin1);
+            if (r.country) parts.push(r.country);
+            return `
+                <div class="alm-result-item" data-i="${i}">
+                    <div class="alm-result-name">${escapeHTML(parts.join(', '))}</div>
+                    <div class="alm-result-coords">${r.latitude.toFixed(4)}°, ${r.longitude.toFixed(4)}°</div>
+                </div>`;
+        }).join('');
+
+        resultsEl.querySelectorAll('.alm-result-item').forEach(el => {
+            el.onclick = () => {
+                const r = results[parseInt(el.dataset.i)];
+                saveAndFetch({ lat: r.latitude, lon: r.longitude, name: r.name, country: r.country });
+            };
+        });
+    }
+
+    async function doSearch(q) {
+        q = q.trim();
+        if (!q) { resultsEl.innerHTML = ''; return; }
+
+        const key = q.toLowerCase();
+        if (searchCache.has(key)) { renderResults(searchCache.get(key)); return; }
+
+        resultsEl.innerHTML = '<div class="alm-searching">Searching…</div>';
+        try {
+            const raw = await geocodeLocation(q);
+            const list = Array.isArray(raw)
+                ? raw
+                : [{ name: raw.name, latitude: raw.lat, longitude: raw.lon, country: raw.country, admin1: null }];
+            if (searchCache.size >= 30) searchCache.delete(searchCache.keys().next().value);
+            searchCache.set(key, list);
+            renderResults(list);
+        } catch (_) {
+            resultsEl.innerHTML = '<div class="alm-no-results">No locations found</div>';
         }
     }
+
+    searchInput.addEventListener('input', e => {
+        clearTimeout(debounceTimer);
+        const q = e.target.value;
+        if (!q.trim()) { resultsEl.innerHTML = ''; return; }
+        debounceTimer = setTimeout(() => doSearch(q), 350);
+    });
+
+    searchInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { clearTimeout(debounceTimer); doSearch(searchInput.value); }
+    });
+
+    // ── Coordinates ──
+    const coordsToggle = document.getElementById('welcomeCoordsToggle');
+    const coordsForm = document.getElementById('welcomeCoordsForm');
+
+    coordsToggle.onclick = () => {
+        const open = coordsForm.classList.toggle('visible');
+        coordsToggle.textContent = (open ? '▾' : '▸') + ' Enter coordinates';
+    };
+
+    const latInput = document.getElementById('welcomeLat');
+    const lonInput = document.getElementById('welcomeLon');
+
+    latInput.addEventListener('input', () => latInput.classList.remove('alm-input-error'));
+    lonInput.addEventListener('input', () => lonInput.classList.remove('alm-input-error'));
+
+    document.getElementById('welcomeCoordsAdd').onclick = async () => {
+        const lat = parseFloat(latInput.value);
+        const lon = parseFloat(lonInput.value);
+
+        if (isNaN(lat) || lat < -90 || lat > 90) {
+            latInput.focus();
+            latInput.classList.add('alm-input-error');
+            return;
+        }
+        if (isNaN(lon) || lon < -180 || lon > 180) {
+            lonInput.focus();
+            lonInput.classList.add('alm-input-error');
+            return;
+        }
+
+        let name = document.getElementById('welcomeCoordsName').value.trim();
+        let country = null;
+
+        if (!name) {
+            const addBtn = document.getElementById('welcomeCoordsAdd');
+            addBtn.textContent = 'Locating…';
+            addBtn.disabled = true;
+            const rev = await reverseGeocodeLocation(lat, lon);
+            name = rev ? rev.name : `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+            country = rev ? rev.country : null;
+            addBtn.textContent = 'Add Location';
+            addBtn.disabled = false;
+        }
+
+        saveAndFetch({ lat, lon, name, country });
+    };
 }
 
 // ===== PWA SETUP =====

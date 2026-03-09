@@ -61,6 +61,32 @@ A lightweight weather dashboard (vanilla JS, no frameworks, no build step). Supp
 
 ---
 
+## Lightning / nowcast rules
+
+Lightning data comes from Blitzortung WebSocket (global). The nowcast merges three sources:
+
+1. **Blitzortung strikes** (primary truth) — real-time, distance-based classification
+2. **METAR TS codes** (fallback / confirmation) — explicit thunderstorm only
+3. **Radar dBZ** (supporting context) — **never** promotes to thunderstorm alone
+
+**State classification** (from strike buffer):
+- `active` — strikes ≤ 5 mi in last 15 min
+- `nearby` — strikes 5–10 mi in last 15 min
+- `approaching` — strikes 10–20 mi in last 30 min
+- `none` — no strikes within 20 mi
+
+**Condition override ladder** (do not change this without discussion):
+- `active` can promote precip to **Thunderstorm**
+- `nearby` can modify to **Rain — thunder nearby**
+- `approaching` — secondary line only, **never** changes primary condition
+- Radar dBZ ≥ 45 alone → **Heavy Rain**, not thunderstorm
+
+**Key files**: `src/services/lightning.js` (WebSocket + buffer), `src/services/nowcast.js` (`_computeLightningState` merge), `src/ui/renderDashboard.js` (`_lightningLineText`, `_applyLightningConditionOverride`)
+
+**Degradation**: if WebSocket disconnects, buffer drains over 30 min, then METAR fallback. See `docs/lightning-nowcast-plan.md` for full spec.
+
+---
+
 ## NWS / US-only rule
 
 NWS logic must fail gracefully. It should never break anything for non-US locations. Keep it isolated.
