@@ -18,6 +18,7 @@
 
 html {
     overflow-x: hidden;
+    overflow-x: clip;
     max-width: 100%;
 }
 
@@ -27,11 +28,25 @@ body {
     color: var(--text-primary);
     min-height: 100vh;
     min-height: 100dvh;
-    background-image: 
+    background-image:
         radial-gradient(circle at 20% 30%, rgba(0, 212, 255, 0.08) 0%, transparent 50%),
         radial-gradient(circle at 80% 70%, rgba(255, 107, 157, 0.06) 0%, transparent 50%);
-    padding: 2rem;
+    padding: 0;
     overflow-x: hidden;
+    overflow-x: clip;
+}
+
+#appShell {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 2rem;
+    box-sizing: border-box;
+}
+
+/* Prevent intrinsic sizing from blowing out viewport width */
+.grid, .card, .header, .location-tabs-inner, .forecast-grid, .hourly-strip {
+    min-width: 0;
 }
 
 .header {
@@ -420,6 +435,8 @@ body {
 
 #weatherContainer {
     overflow-x: hidden;
+    max-width: 100%;
+    min-width: 0;
 }
 
 .card {
@@ -2096,7 +2113,7 @@ body {
 
 /* ===== TABLET PORTRAIT — 768px to 1024px portrait (matches mobile layout) ===== */
 @media (max-width: 1024px) and (min-width: 769px) and (orientation: portrait) {
-    body {
+    #appShell {
         padding: 1rem;
     }
     .header {
@@ -2168,7 +2185,7 @@ body {
 
 /* ===== TABLET LANDSCAPE — side-by-side Current + 7-Day ===== */
 @media (min-width: 769px) and (max-width: 1366px) and (orientation: landscape) {
-    body {
+    #appShell {
         padding: 1rem 1.25rem;
     }
     .header {
@@ -2252,7 +2269,7 @@ body {
 
 /* ===== MOBILE (iPhone / small screens) — max 768px ===== */
 @media (max-width: 768px) {
-    body {
+    #appShell {
         padding: 0.75rem;
     }
     .header {
@@ -2479,7 +2496,7 @@ body {
 
 /* ===== SMALL PHONES — max 400px ===== */
 @media (max-width: 400px) {
-    body {
+    #appShell {
         padding: 0.5rem;
     }
     .header h1 {
@@ -2509,7 +2526,7 @@ body {
 /* ===== PWA STANDALONE MODE — safe area for notch/dynamic island ===== */
 /* These MUST come after the mobile media queries so they aren't overridden */
 @media (display-mode: standalone) {
-    body {
+    #appShell {
         padding-top: calc(2rem + env(safe-area-inset-top, 0px));
         padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
         padding-left: max(2rem, env(safe-area-inset-left, 0px));
@@ -2517,7 +2534,7 @@ body {
     }
 }
 @media (display-mode: standalone) and (max-width: 768px) {
-    body {
+    #appShell {
         padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
         padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
         padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
@@ -2525,7 +2542,7 @@ body {
     }
 }
 @media (display-mode: standalone) and (max-width: 400px) {
-    body {
+    #appShell {
         padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
         padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
         padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
