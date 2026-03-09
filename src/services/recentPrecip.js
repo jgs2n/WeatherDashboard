@@ -2,7 +2,7 @@
 // Primary:  Meteostat point/hourly (requires 'meteostatApiKey' in localStorage)
 // Fallback: Open-Meteo snowfall + precipitation (model, always available)
 //
-// Exports (globals): fetchRecentPrecip, buildRecentPrecip, sliceRecentPrecip
+// Exports (globals): fetchRecentPrecip, buildRecentPrecip, sliceRecentPrecip, buildFutureHours
 
 let _rpCache    = { data: null, ts: null, key: null };
 let _rpPending  = null;
@@ -56,20 +56,29 @@ async function fetchRecentPrecip(lat, lon) {
 function buildRecentPrecip(meteostatRaw, openMeteoHourly, timezone, nwsHistory) {
     const now = new Date();
 
+    let result = null;
+
     // 1. IEM ASOS observation history — actual ASOS p01i data, US only, no key required
-    if (nwsHistory && nwsHistory.rows && nwsHistory.rows.length >= 3) {
-        const result = _buildFromNWSHistory(nwsHistory, timezone);
-        if (result) return result;
+    if (!result && nwsHistory && nwsHistory.rows && nwsHistory.rows.length >= 3) {
+        result = _buildFromNWSHistory(nwsHistory, timezone);
     }
 
     // 2. Meteostat — station-based, requires paid API key
-    if (meteostatRaw && meteostatRaw.data && meteostatRaw.data.length > 0) {
-        const result = _buildFromMeteostat(meteostatRaw, openMeteoHourly, now, timezone);
-        if (result) return result;
+    if (!result && meteostatRaw && meteostatRaw.data && meteostatRaw.data.length > 0) {
+        result = _buildFromMeteostat(meteostatRaw, openMeteoHourly, now, timezone);
     }
 
     // 3. Open-Meteo model — always available, estimated
-    return _buildFallback(openMeteoHourly, now, timezone);
+    if (!result) {
+        result = _buildFallback(openMeteoHourly, now, timezone);
+    }
+
+    // Attach 3h forecast from Open-Meteo (separate from observed series)
+    if (result) {
+        result.futureSeries = buildFutureHours(openMeteoHourly, 3);
+    }
+
+    return result;
 }
 
 // ── NWS observation history path ──────────────────────────────────────────────
@@ -289,17 +298,29 @@ function sliceRecentPrecip(rp, windowHours) {
         ? Math.round(present.reduce((sum, s) => sum + (s.snowIn || 0), 0) * 100) / 100
         : 0;
 
+    // Future forecast data (pass through, compute totals)
+    const futureSeries = rp.futureSeries || [];
+    const forecastRainTotal = futureSeries.length > 0
+        ? Math.round(futureSeries.reduce((sum, s) => sum + (s.rainIn || 0), 0) * 100) / 100
+        : 0;
+    const forecastSnowTotal = futureSeries.some(s => (s.snowIn || 0) > 0)
+        ? Math.round(futureSeries.reduce((sum, s) => sum + (s.snowIn || 0), 0) * 100) / 100
+        : 0;
+
     return {
         ...rp,
         windowHours,
         series,
+        futureSeries,
         coverageStart:  series.length > 0 ? series[0].time : null,
         coverageEnd:    rp.asOf,
         expectedHours:  windowHours,
         reportedHours:  present.length,
         missingHours:   windowHours - present.length,
         rainTotal,
-        snowTotal
+        snowTotal,
+        forecastRainTotal,
+        forecastSnowTotal
     };
 }
 
@@ -312,4 +333,37 @@ function _nearestHourIdx(times, target) {
         if (diff < bestDiff && diff <= 30 * 60000) { bestDiff = diff; bestIdx = i; }
     }
     return bestIdx;
+}
+
+// ── Future hours extraction (Open-Meteo forecast) ────────────────────────────
+// Extracts the next `count` hours of forecast precipitation from Open-Meteo
+// hourly arrays. Returns entries marked with forecast:true.
+
+function buildFutureHours(openMeteoHourly, count = 3) {
+    if (!openMeteoHourly || !openMeteoHourly.time) return [];
+    const now = new Date();
+    // Find first future hour (strictly after now)
+    let startIdx = -1;
+    for (let i = 0; i < openMeteoHourly.time.length; i++) {
+        if (new Date(openMeteoHourly.time[i]) > now) { startIdx = i; break; }
+    }
+    if (startIdx < 0) return [];
+
+    const result = [];
+    for (let i = startIdx; i < Math.min(startIdx + count, openMeteoHourly.time.length); i++) {
+        const rainIn = openMeteoHourly.precipitation[i] != null
+            ? Math.round(openMeteoHourly.precipitation[i] * 1000) / 1000
+            : 0;
+        const snowIn = (openMeteoHourly.snowfall && openMeteoHourly.snowfall[i] != null)
+            ? Math.round((openMeteoHourly.snowfall[i] / 2.54) * 1000) / 1000
+            : 0;
+        result.push({
+            time: openMeteoHourly.time[i],
+            rainIn,
+            snowIn,
+            present: true,
+            forecast: true
+        });
+    }
+    return result;
 }

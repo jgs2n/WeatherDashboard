@@ -1,13 +1,16 @@
 // Nowcast Service — orchestrator
-// Fuses NWS station observations + radar + thunder detection
-// into a single nowSummary object. Manages adaptive polling.
+// Produces three separate nowcast products per poll cycle:
+//   skyState       — background atmospheric state (overcast, fog, clear, etc.)
+//   precipStateNow — is it precipitating right now? (radar-primary)
+//   precipTrend60m — 0–60 min precipitation timeline + confidence-aware summary
+// Plus the unchanged thunder product.
 //
 // Exports (globals): getNowSummary, startNowcastPolling, stopNowcastPolling
 
 /**
  * Get a fused nowcast summary for a location.
  * @param {{ lat:number, lon:number, country:string }} loc
- * @returns {Promise<{ condition, rain, thunder }>}
+ * @returns {Promise<{ skyState, precipStateNow, precipTrend60m, thunder }>}
  */
 async function getNowSummary({ lat, lon, country }) {
     const isUS = country === 'United States';
@@ -25,44 +28,35 @@ async function getNowSummary({ lat, lon, country }) {
         console.warn('[Nowcast] Radar sampling failed:', err.message);
     }
 
-    // Thunder detection — combine METAR + radar
+    // Thunder detection — unchanged logic, unchanged output key
     const thunderResult = _detectThunderFromSources(obs, radarState);
 
-    // Motion vector + rain timing
-    let timing = { beginInMin: null, endInMin: null };
+    // Motion vector (used by estimateRainTiming fallback path in _computePrecipTrend60m)
+    let motion = null;
     try {
-        const motion = await estimateMotionVector(lat, lon, isUS);
-        const currentDbz = radarState ? radarState.dbz : null;
-        const isRaining = radarState ? radarState.isRaining : false;
-        timing = estimateRainTiming(motion, currentDbz, isRaining);
+        motion = await estimateMotionVector(lat, lon, isUS);
     } catch (err) {
-        console.warn('[Nowcast] Motion/timing estimation failed:', err.message);
+        console.warn('[Nowcast] Motion estimation failed:', err.message);
     }
 
-    // Build rain summary
-    const rain = radarState ? {
-        isRainingNow: radarState.isRaining,
-        beginInMin:   timing.beginInMin,
-        endInMin:     timing.endInMin,
-        updatedAt:    radarState.timestamp,
-        source:       [radarState.source],
-        confidence:   radarState.isRaining ? 'high' : (timing.confidence || 'low')
-    } : null;
+    const currentDbz = radarState ? radarState.dbz : null;
+    const isRaining  = radarState ? radarState.isRaining : false;
 
-    // Build thunder summary
+    // Three separate products
+    const skyState       = _computeSkyState(obs, country);
+    const precipStateNow = _computePrecipNow(obs, radarState, country);
+    const precipTrend60m = _computePrecipTrend60m(currentDbz, isRaining, motion);
+
+    // Thunder — shape unchanged for backward compat
     const thunder = {
         isThunderNow: thunderResult.isThunder,
         withinMi:     thunderResult.isThunder ? 10 : null,
-        updatedAt:    obs ? obs.obs.timestamp : (radarState ? radarState.timestamp : new Date().toISOString()),
+        updatedAt:    obs && obs.obs ? obs.obs.timestamp : (radarState ? radarState.timestamp : new Date().toISOString()),
         source:       [thunderResult.source],
         confidence:   thunderResult.confidence
     };
 
-    return {
-        condition: _fuseCondition(obs, radarState, thunderResult, country),
-        rain,
-        thunder
-    };
+    return { skyState, precipStateNow, precipTrend60m, thunder };
 }
 
 // ── Thunder helper ───────────────────────────────────────────────────────────
@@ -74,71 +68,149 @@ function _detectThunderFromSources(obs, radarState) {
     return detectThunder(pw, text, dbz);
 }
 
-// ── Condition Fusion ─────────────────────────────────────────────────────────
-// Priority:
-//   1. Thunder detected → "Thunderstorm"
-//   2. Radar shows rain → Rain desc by dBZ
-//   3. METAR obs age <= 30 min → METAR condition
-//   4. null → caller uses Open-Meteo, labeled "Model"
+// ── Product 1: Sky State ──────────────────────────────────────────────────────
+// Represents background atmospheric state (cloud cover, fog, visibility).
+// Uses freshness-decayed METAR; returns null to signal model WMO fallback.
 
-function _fuseCondition(obs, radarState, thunderResult, country) {
+function _computeSkyState(obs, country) {
+    if (!obs || !obs.obs) return null;
+
+    const age = metarAgeMinutes(obs.obs.timestamp);
+    const weight = metarFreshnessWeight(age, 'sky');
+
+    const parsed = parseMetarCondition(obs.obs.presentWeather, obs.obs.textDescription);
+    if (parsed.desc === 'Unknown') return null;
+
+    return {
+        desc:       parsed.desc,
+        icon:       parsed.icon,
+        source:     `METAR ${obs.stationId}`,
+        confidence: weight,
+        observedAt: obs.obs.timestamp
+    };
+}
+
+// ── Product 2: Precipitation Now ─────────────────────────────────────────────
+// Represents current precipitation state. Radar always wins when available —
+// this is the fix for the "stale METAR beats fresh radar" bug.
+// Priority: radar → METAR (freshness-decayed) → null (caller falls back to model)
+
+function _computePrecipNow(obs, radarState, country) {
     const isUS = country === 'United States';
-    const radarSource = isUS ? 'NEXRAD' : 'RainViewer';
+    const radarSourceName = isUS ? 'NEXRAD' : 'RainViewer';
 
-    // Priority 1: thunder
-    if (thunderResult && thunderResult.isThunder) {
-        const sources = [radarSource];
-        if (obs) sources.unshift(`METAR ${obs.stationId}`);
-        return {
-            desc:       'Thunderstorm',
-            icon:       '\u26C8\uFE0F', // ⛈️
-            source:     sources,
-            station:    obs ? { id: obs.stationId, name: obs.stationName, dist_mi: obs.distance_mi } : null,
-            updatedAt:  obs ? obs.obs.timestamp : (radarState ? radarState.timestamp : new Date().toISOString()),
-            confidence: thunderResult.confidence
-        };
+    // ── Priority 1: Radar ─────────────────────────────────────────────────────
+    if (radarState) {
+        if (radarState.isRaining) {
+            const dbz = radarState.dbz || 0;
+            let phenomenon, desc, icon;
+            if (dbz >= 50)      { phenomenon = 'heavy rain'; desc = 'Heavy Rain'; icon = '\uD83C\uDF27\uFE0F'; }
+            else if (dbz >= 35) { phenomenon = 'rain';       desc = 'Rain';       icon = '\uD83C\uDF27\uFE0F'; }
+            else if (dbz >= 28) { phenomenon = 'rain';       desc = 'Light Rain'; icon = '\uD83C\uDF26\uFE0F'; }
+            else                { phenomenon = 'drizzle';    desc = 'Drizzle';    icon = '\uD83C\uDF26\uFE0F'; }
+            return { phenomenon, desc, icon, source: radarSourceName, confidence: 0.9, observedAt: radarState.timestamp };
+        }
+        // Radar present but dry — return dry with high confidence
+        return { phenomenon: 'dry', desc: 'Dry', icon: '', source: radarSourceName, confidence: 0.85, observedAt: radarState.timestamp };
     }
 
-    // Priority 2: radar shows rain
-    if (radarState && radarState.isRaining) {
-        const dbz = radarState.dbz || 0;
-        let desc, icon;
-        if (dbz >= 50)      { desc = 'Heavy Rain';  icon = '\uD83C\uDF27\uFE0F'; } // 🌧️
-        else if (dbz >= 35) { desc = 'Rain';         icon = '\uD83C\uDF27\uFE0F'; }
-        else                { desc = 'Light Rain';   icon = '\uD83C\uDF26\uFE0F'; } // 🌦️
-
-        const sources = [radarSource];
-        if (obs) sources.push(`METAR ${obs.stationId}`);
-        return {
-            desc,
-            icon,
-            source:     sources,
-            station:    obs ? { id: obs.stationId, name: obs.stationName, dist_mi: obs.distance_mi } : null,
-            updatedAt:  radarState.timestamp,
-            confidence: 'high'
-        };
-    }
-
-    // Priority 3: fresh METAR observation
+    // ── Priority 2: METAR (freshness-decayed) ────────────────────────────────
     if (obs && obs.obs) {
         const age = metarAgeMinutes(obs.obs.timestamp);
-        if (age <= 30) {
-            const parsed = parseMetarCondition(obs.obs.presentWeather, obs.obs.textDescription);
-            const sources = [`METAR ${obs.stationId}`];
-            if (radarState) sources.push(radarSource);
-            return {
-                desc:       parsed.desc,
-                icon:       parsed.icon,
-                source:     sources,
-                station:    { id: obs.stationId, name: obs.stationName, dist_mi: obs.distance_mi },
-                updatedAt:  obs.obs.timestamp,
-                confidence: age <= 15 ? 'high' : 'med'
-            };
+        const weight = metarFreshnessWeight(age, 'precip');
+        if (weight < 0.05) return null; // too stale to be useful
+
+        const parsed = parseMetarCondition(obs.obs.presentWeather, obs.obs.textDescription);
+        if (parsed.isRain || parsed.isSnow || parsed.isThunder) {
+            const phenomenon = parsed.isThunder ? 'thunderstorm'
+                             : parsed.isSnow    ? 'snow'
+                             : parsed.desc.toLowerCase().includes('drizzle') ? 'drizzle'
+                             : parsed.desc.toLowerCase().includes('heavy')   ? 'heavy rain'
+                             : 'rain';
+            return { phenomenon, desc: parsed.desc, icon: parsed.icon,
+                     source: `METAR ${obs.stationId}`, confidence: weight * 0.8, observedAt: obs.obs.timestamp };
         }
+        // METAR reports dry conditions
+        return { phenomenon: 'dry', desc: 'Dry', icon: '',
+                 source: `METAR ${obs.stationId}`, confidence: weight * 0.7, observedAt: obs.obs.timestamp };
     }
 
-    // Priority 4: fallback (null signals caller to use Open-Meteo with "Model" label)
+    // ── Priority 3: no usable source ─────────────────────────────────────────
     return null;
+}
+
+// ── Product 3: Precipitation Trend 0–60 min ──────────────────────────────────
+// Builds a 12-bucket timeline from radar extrapolation and summarizes it into
+// confidence-aware human language.
+
+function _computePrecipTrend60m(currentDbz, isRaining, motion) {
+    const timeline = buildPrecipTimeline(currentDbz, isRaining);
+
+    // Derive beginInMin / endInMin: from timeline if available, else legacy fallback
+    let beginInMin = null, endInMin = null;
+    if (timeline) {
+        const firstWet = timeline.find(b => b.precipClass > 0);
+        const lastWet  = [...timeline].reverse().find(b => b.precipClass > 0);
+        if (!isRaining && firstWet) beginInMin = firstWet.minute;
+        if (isRaining  && lastWet)  endInMin   = lastWet.minute;
+    } else {
+        const t = estimateRainTiming(motion, currentDbz, isRaining);
+        beginInMin = t.beginInMin;
+        endInMin   = t.endInMin;
+    }
+
+    const summaryResult = _summarizePrecipTimeline(timeline, isRaining, beginInMin, endInMin);
+    return {
+        timeline,
+        summary:           summaryResult ? summaryResult.text : null,
+        summaryConfidence: summaryResult ? summaryResult.confidence : 'low',
+        beginInMin,
+        endInMin
+    };
+}
+
+// ── Precipitation Timeline Summarizer ────────────────────────────────────────
+// Converts the 12-bucket timeline into a confidence-aware human string.
+// Returns { text, confidence } or null if no precipitation is predicted.
+
+function _summarizePrecipTimeline(timeline, isRaining, beginInMin, endInMin) {
+    // No timeline (< 3 radar frames) — fall back to simple timing strings at low confidence
+    if (!timeline) {
+        if (isRaining && endInMin != null)   return { text: `Rain ending in ~${endInMin} min`,   confidence: 'low' };
+        if (!isRaining && beginInMin != null) return { text: `Rain in ~${beginInMin} min`,        confidence: 'low' };
+        return null;
+    }
+
+    const wetBuckets = timeline.filter(b => b.precipClass > 0);
+    if (wetBuckets.length === 0) return null;
+
+    // Detect intermittent: count transitions from dry → wet
+    let runCount = 0, prevWet = false;
+    for (const b of timeline) {
+        const wet = b.precipClass > 0;
+        if (wet && !prevWet) runCount++;
+        prevWet = wet;
+    }
+    if (runCount >= 3) return { text: 'Intermittent rain next hour', confidence: 'low' };
+
+    // Average confidence of wet buckets determines phrasing tier
+    const avgConf = wetBuckets.reduce((s, b) => s + b.confidence, 0) / wetBuckets.length;
+    const tier = avgConf >= 0.7 ? 'high' : avgConf >= 0.4 ? 'med' : 'low';
+
+    if (isRaining) {
+        const lastWet = wetBuckets[wetBuckets.length - 1];
+        const duration = lastWet.minute;
+        if (tier === 'high') return { text: `Rain continuing for ~${duration} min`, confidence: 'high' };
+        if (tier === 'med')  return { text: `Rain may continue ~${duration} min`,   confidence: 'med'  };
+        return { text: 'Rain now, clearing later', confidence: 'low' };
+    }
+
+    // Not raining — rain is approaching
+    const firstWet = wetBuckets[0];
+    const start = firstWet.minute;
+    if (tier === 'high') return { text: `Rain beginning in ~${start} min`,                          confidence: 'high' };
+    if (tier === 'med')  return { text: `Rain may begin in ~${Math.max(0, start - 5)}–${start + 5} min`, confidence: 'med' };
+    return { text: 'Showers possible soon', confidence: 'low' };
 }
 
 // ── Adaptive Polling ─────────────────────────────────────────────────────────
@@ -146,13 +218,10 @@ function _fuseCondition(obs, radarState, thunderResult, country) {
 // Pauses when tab is hidden, resumes when visible.
 
 function _computePollInterval(summary) {
-    if (!summary || !summary.rain) return POLL_DEFAULT_MS;
-    const rain = summary.rain;
-    // Active weather: poll faster
-    if (rain.isRainingNow || (rain.beginInMin !== null && rain.beginInMin < 30)) {
-        return POLL_ACTIVE_MS;
-    }
-    // Dry with no echoes: poll slower
+    if (!summary) return POLL_DEFAULT_MS;
+    const isRaining = summary.precipStateNow && summary.precipStateNow.phenomenon !== 'dry';
+    const rainSoon  = summary.precipTrend60m && summary.precipTrend60m.beginInMin !== null && summary.precipTrend60m.beginInMin < 30;
+    if (isRaining || rainSoon) return POLL_ACTIVE_MS;
     return POLL_DRY_MS;
 }
 

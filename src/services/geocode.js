@@ -23,3 +23,33 @@ async function geocodeLocation(locationName) {
     }
     throw new Error('Location not found');
 }
+
+// Reverse geocode lat/lon → { lat, lon, name, country } using Nominatim
+// Returns null on failure — callers must handle gracefully
+async function reverseGeocodeLocation(lat, lon) {
+    try {
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`
+        );
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data.address) return null;
+
+        const addr = data.address;
+        const city = addr.city || addr.town || addr.village || addr.suburb || addr.hamlet || addr.county;
+        const region = addr.state || addr.country;
+        const name = city
+            ? (region ? `${city}, ${region}` : city)
+            : (data.display_name ? data.display_name.split(',')[0].trim() : null);
+
+        return {
+            lat,
+            lon,
+            name: name || 'My Location',
+            country: addr.country_code ? addr.country_code.toUpperCase() : addr.country
+        };
+    } catch (e) {
+        console.warn('Reverse geocode failed:', e);
+        return null;
+    }
+}

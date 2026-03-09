@@ -126,28 +126,31 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
     const current = openMeteo.current;
     const weatherInfo = getWeatherInfo(current.weather_code);
 
-    // Determine condition to display: nowcast (METAR/radar) or Open-Meteo model fallback
+    // Determine condition to display.
+    // Priority: active precipitation (precipStateNow) → sky state (skyState) → model WMO fallback
     let displayCondition, conditionSubtitle;
-    if (nowSummary && nowSummary.condition) {
-        const nc = nowSummary.condition;
-        displayCondition = { desc: nc.desc, icon: nc.icon };
-        const ageMins = metarAgeMinutes(nc.updatedAt);
-        const ageStr = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
-        conditionSubtitle = ageStr;
+    const _isWet = nowSummary && nowSummary.precipStateNow && nowSummary.precipStateNow.phenomenon !== 'dry';
+    const _sky   = nowSummary && nowSummary.skyState;
+    const _trend = nowSummary && nowSummary.precipTrend60m;
+
+    if (_isWet) {
+        const ps = nowSummary.precipStateNow;
+        displayCondition = { desc: ps.desc, icon: ps.icon };
+        const ageMins = metarAgeMinutes(ps.observedAt);
+        conditionSubtitle = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
+    } else if (_sky) {
+        displayCondition = { desc: _sky.desc, icon: _sky.icon };
+        const ageMins = metarAgeMinutes(_sky.observedAt);
+        conditionSubtitle = _sky.observedAt ? (ageMins < 1 ? 'just now' : `${ageMins}m ago`) : '';
     } else {
         displayCondition = weatherInfo;
         conditionSubtitle = '';
     }
 
-    // Build rain timing HTML
+    // Build rain timing HTML — confidence-aware prose from precipTrend60m
     let rainTimingHTML = '';
-    if (nowSummary && nowSummary.rain) {
-        const rain = nowSummary.rain;
-        if (rain.isRainingNow && rain.endInMin != null) {
-            rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F Rain ending in ~${rain.endInMin} min</div>`;
-        } else if (!rain.isRainingNow && rain.beginInMin != null) {
-            rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F Rain begins in ~${rain.beginInMin} min</div>`;
-        }
+    if (_trend && _trend.summary) {
+        rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F ${_trend.summary}</div>`;
     }
 
     // Build thunder HTML
@@ -657,42 +660,46 @@ function updateNowcastDisplay(nowSummary) {
     const iconEl = document.querySelector('.weather-icon');
     const subEl  = document.querySelector('.nowcast-subtitle');
 
-    if (nowSummary.condition) {
-        const nc = nowSummary.condition;
-        if (condEl) condEl.textContent = nc.desc;
-        if (iconEl) iconEl.textContent = nc.icon;
-        if (subEl) {
-            const ageMins = metarAgeMinutes(nc.updatedAt);
-            const ageStr = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
-            subEl.textContent = ageStr;
-            subEl.classList.remove('stale');
+    // Primary icon/condition — same priority as renderCurrentCard
+    const _isWet = nowSummary.precipStateNow && nowSummary.precipStateNow.phenomenon !== 'dry';
+    const _sky   = nowSummary.skyState;
+    const _trend = nowSummary.precipTrend60m;
+
+    let _displayDesc = null, _displayIcon = null, _subtitleText = '';
+    if (_isWet) {
+        const ps = nowSummary.precipStateNow;
+        _displayDesc = ps.desc; _displayIcon = ps.icon;
+        const age = metarAgeMinutes(ps.observedAt);
+        _subtitleText = age < 1 ? 'just now' : `${age}m ago`;
+    } else if (_sky) {
+        _displayDesc = _sky.desc; _displayIcon = _sky.icon;
+        if (_sky.observedAt) {
+            const age = metarAgeMinutes(_sky.observedAt);
+            _subtitleText = age < 1 ? 'just now' : `${age}m ago`;
         }
-    } else if (subEl) {
-        subEl.textContent = '';
+    }
+    // else: leave icon/desc at model values from initial render (no update)
+
+    if (_displayDesc !== null) {
+        if (condEl) condEl.textContent = _displayDesc;
+        if (iconEl) iconEl.textContent = _displayIcon;
+    }
+    if (subEl) {
+        subEl.textContent = _subtitleText;
+        subEl.classList.remove('stale');
     }
 
-    // Rain timing — find or create element
+    // Rain timing — find or create element; use confidence-aware summary prose
     let rainEl = document.querySelector('.nowcast-rain-timing');
     const iconWrap = document.querySelector('.weather-icon-wrap');
-    if (nowSummary.rain) {
-        const rain = nowSummary.rain;
-        if (rain.isRainingNow && rain.endInMin != null) {
-            if (!rainEl && iconWrap) {
-                rainEl = document.createElement('div');
-                rainEl.className = 'nowcast-rain-timing';
-                iconWrap.appendChild(rainEl);
-            }
-            if (rainEl) { rainEl.textContent = '\uD83C\uDF27\uFE0F Rain ending in ~' + rain.endInMin + ' min'; rainEl.style.display = ''; }
-        } else if (!rain.isRainingNow && rain.beginInMin != null) {
-            if (!rainEl && iconWrap) {
-                rainEl = document.createElement('div');
-                rainEl.className = 'nowcast-rain-timing';
-                iconWrap.appendChild(rainEl);
-            }
-            if (rainEl) { rainEl.textContent = '\uD83C\uDF27\uFE0F Rain begins in ~' + rain.beginInMin + ' min'; rainEl.style.display = ''; }
-        } else if (rainEl) {
-            rainEl.style.display = 'none';
+    const summaryText = _trend && _trend.summary ? '\uD83C\uDF27\uFE0F ' + _trend.summary : null;
+    if (summaryText) {
+        if (!rainEl && iconWrap) {
+            rainEl = document.createElement('div');
+            rainEl.className = 'nowcast-rain-timing';
+            iconWrap.appendChild(rainEl);
         }
+        if (rainEl) { rainEl.textContent = summaryText; rainEl.style.display = ''; }
     } else if (rainEl) {
         rainEl.style.display = 'none';
     }
@@ -720,7 +727,7 @@ function openConditionDetail() {
 
     const obs = cachedStationObs && cachedStationObs.obs;
     const station = cachedStationObs || null;
-    const nc = cachedNowSummary && cachedNowSummary.condition;
+    const nc = cachedNowSummary && cachedNowSummary.skyState;
 
     let html = '<div class="obs-detail">';
 

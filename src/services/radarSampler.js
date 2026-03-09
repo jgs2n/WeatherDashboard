@@ -3,7 +3,7 @@
 // No DOM side effects visible to user.
 //
 // Exports (globals): sampleRadarAtPoint, loadRadarHistory, getRadarFrames,
-//                    estimateMotionVector, estimateRainTiming
+//                    estimateMotionVector, estimateRainTiming, buildPrecipTimeline
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -595,6 +595,48 @@ function estimateRainTiming(motionVector, currentDbz, isRaining) {
 
     const confidence = Math.abs(slope) >= 5 ? 'high' : Math.abs(slope) >= 3 ? 'med' : 'low';
     return { beginInMin: null, endInMin, confidence };
+}
+
+// ── Precipitation Timeline (0–60 min, 5-min buckets) ─────────────────────────
+// Projects current dBZ forward using the least-squares slope from recent frames.
+// Returns null if insufficient frame history (< 3 frames).
+//
+// precipClass values:
+//   0 = dry        (< 18 dBZ)
+//   1 = drizzle    (18–27 dBZ)
+//   2 = rain       (28–34 dBZ)
+//   3 = heavy rain (35–49 dBZ)
+//   4 = convective (≥ 50 dBZ)
+//
+// Note: these intensity bands differ from hysteresis ON/OFF thresholds (28/22)
+// intentionally — timeline uses descriptive intensity, not state-machine gates.
+
+function _dbzToPrecipClass(dbz) {
+    if (dbz < 18) return 0;
+    if (dbz < 28) return 1;
+    if (dbz < 35) return 2;
+    if (dbz < 50) return 3;
+    return 4;
+}
+
+function buildPrecipTimeline(currentDbz, isRaining) {
+    const recentFrames = _radarFrames.slice(-RADAR_CFG.SLOPE_FRAMES);
+    if (recentFrames.length < 3) return null;
+
+    const slope = _lsSlope(recentFrames.map(f => f.dbz !== null ? f.dbz : 0));
+    const baseDbz = (currentDbz !== null && currentDbz !== undefined)
+        ? currentDbz
+        : (isRaining ? RADAR_CFG.ON_THRESHOLD : 0);
+
+    return Array.from({ length: 12 }, (_, i) => {
+        const projected = Math.max(0, baseDbz + slope * i);
+        return {
+            minute:       i * 5,
+            precipClass:  _dbzToPrecipClass(projected),
+            projectedDbz: Math.round(projected),
+            confidence:   Math.max(0.1, 1.0 - i * 0.07)
+        };
+    });
 }
 
 // ── Reset (called on location change) ────────────────────────────────────────

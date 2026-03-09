@@ -1,6 +1,6 @@
 // METAR / NWS present-weather parsing utilities
 // Pure functions — no DOM, no fetch.
-// Exports (globals): parseMetarCondition, metarAgeMinutes, mapNWSTextToCondition
+// Exports (globals): parseMetarCondition, metarAgeMinutes, mapNWSTextToCondition, metarFreshnessWeight
 
 // ── NWS presentWeather rawString → condition mapping ─────────────────────────
 // NWS present-weather objects have { rawString, ... } with METAR abbreviations.
@@ -94,6 +94,28 @@ function parseMetarCondition(presentWeather, textDescription) {
 function metarAgeMinutes(isoTimestamp) {
     if (!isoTimestamp) return Infinity;
     return Math.floor((Date.now() - new Date(isoTimestamp).getTime()) / 60000);
+}
+
+/**
+ * Freshness weight for a METAR observation based on age and phenomenon type.
+ * Sky observations (cloud cover, fog) age more slowly than precipitation reports.
+ * @param {number} ageMinutes - result of metarAgeMinutes()
+ * @param {'precip'|'sky'} phenomenon
+ * @returns {number} weight 0..1
+ */
+function metarFreshnessWeight(ageMinutes, phenomenon) {
+    if (phenomenon === 'sky') {
+        if (ageMinutes <= 20) return 1.0;
+        if (ageMinutes <= 40) return 0.7;
+        if (ageMinutes <= 60) return 0.4;
+        return 0.1;
+    }
+    // 'precip' — precipitation truth decays faster
+    if (ageMinutes <= 10) return 1.0;
+    if (ageMinutes <= 20) return 0.7;
+    if (ageMinutes <= 30) return 0.4;
+    if (ageMinutes <= 40) return 0.15;
+    return 0.05;
 }
 
 /**

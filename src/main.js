@@ -85,11 +85,37 @@ function refreshWeather() {
     }
 }
 
-// Show prompt to add new location
-function showAddLocationPrompt() {
-    const locationName = prompt('Enter city name (e.g., "Denver" or "Seattle"):');
-    if (locationName && locationName.trim()) {
-        addNewLocation(locationName.trim());
+// Show Add Location modal — search, GPS, or coordinates
+async function showAddLocationPrompt() {
+    try {
+        const location = await showAddLocationModal();
+
+        const exists = savedLocations.find(loc =>
+            loc.lat && Math.abs(loc.lat - location.lat) < 0.01 &&
+            loc.lon && Math.abs(loc.lon - location.lon) < 0.01
+        );
+        if (exists) {
+            alert('This location is already saved!');
+            return;
+        }
+
+        const newLocation = {
+            name: location.name,
+            displayName: extractDisplayName(location.name),
+            lat: location.lat,
+            lon: location.lon,
+            country: location.country
+        };
+
+        savedLocations.push(newLocation);
+        activeLocation = newLocation;
+        saveLocations();
+        renderTabs();
+        fetchWeatherDataDirect(location.lat, location.lon, location);
+    } catch (error) {
+        if (error.message !== 'Location selection cancelled') {
+            alert('Error: ' + error.message);
+        }
     }
 }
 
