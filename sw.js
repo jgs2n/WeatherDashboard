@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.12.0';
+const CACHE_NAME = 'weather-hq-v1.14.0';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
@@ -7,6 +7,7 @@ const PRECACHE_URLS = [
     'src/state/store.js',
     'src/utils/weatherCodes.js',
     'src/utils/risk.js',
+    'src/utils/dailyIcon.js',
     'src/utils/dom.js',
     'src/utils/moon.js',
     'src/utils/metarParse.js',

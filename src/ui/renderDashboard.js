@@ -418,7 +418,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
 }
 
 // 10-day forecast grid — returns HTML string, writes forecastDays global
-function renderForecastGrid(daily, nws, modelComparison, locLabel) {
+function renderForecastGrid(daily, derivedIcons, nws, modelComparison, locLabel) {
     // Build model confidence spread for each day
     const modelSpread = [];
     if (modelComparison && modelComparison.daily) {
@@ -476,11 +476,11 @@ function renderForecastGrid(daily, nws, modelComparison, locLabel) {
     const _todayStr = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
     const startIdx = Math.max(0, daily.time.findIndex(d => d >= _todayStr));
     const hasAnySnow = daily.snowfall_sum
-        ? daily.time.slice(startIdx, startIdx + 10).some((_, i) => (daily.snowfall_sum[startIdx + i] || 0) > 0)
+        ? daily.time.slice(startIdx, startIdx + 7).some((_, i) => (daily.snowfall_sum[startIdx + i] || 0) > 0)
         : false;
-    const forecastHTML = daily.time.slice(startIdx, startIdx + 10).map((date, i) => {
+    const forecastHTML = daily.time.slice(startIdx, startIdx + 7).map((date, i) => {
         const di = startIdx + i; // index into daily arrays (offset by past days)
-        const dayInfo = getWeatherInfo(daily.weather_code[di]);
+        const dayInfo = (derivedIcons && derivedIcons[di]) || getWeatherInfo(daily.weather_code[di]);
 
         const dateParts = date.split('-');
         const year = parseInt(dateParts[0]);
@@ -596,7 +596,7 @@ function renderForecastGrid(daily, nws, modelComparison, locLabel) {
     return `
         <div class="card forecast-card">
             <div class="card-header">
-                <div class="card-title">10-DAY FORECAST — ${locLabel}</div>
+                <div class="card-title">7-DAY FORECAST — ${locLabel}</div>
                 ${nws ? `<label class="nws-toggle"><input type="checkbox" id="nwsCheck" onchange="toggleNWS(this.checked)"><span>NWS</span></label>` : ''}
             </div>
             <div class="forecast-grid">
@@ -684,7 +684,8 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
     const locLabel = extractDisplayName(location.name);
 
     const currentCardHTML = renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary);
-    const forecastGridHTML = renderForecastGrid(openMeteo.daily, nws, modelComparison, locLabel);
+    const derivedIcons = deriveDailyIcons(openMeteo.hourly, openMeteo.daily);
+    const forecastGridHTML = renderForecastGrid(openMeteo.daily, derivedIcons, nws, modelComparison, locLabel);
     const hourlyStripHTML = renderHourlyStrip(openMeteo.hourly, openMeteo.current, locLabel);
 
     const satelliteHTML = `<div class="card satellite-card"><!-- Radar section rendered by renderRadarSection() --></div>`;
