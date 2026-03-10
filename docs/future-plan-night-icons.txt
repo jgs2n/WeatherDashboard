@@ -1,0 +1,310 @@
+# Day/Night Weather Icons for 10-Day Forecast — Future Plan
+
+## Context
+
+The 10-day forecast currently shows a single emoji icon per day, derived only from
+daytime hours. Nighttime conditions are completely ignored. The goal is to show the
+predominant night condition alongside the day icon — but only when the night is
+"notable" (precip, storms, snow, fog). This also upgrades from emojis to the
+Basmilius Meteocons icon set (MIT license), which has proper day/night SVG variants
+(sun vs moon-based icons).
+
+Icon set: https://github.com/basmilius/weather-icons
+CDN base: https://cdn.jsdelivr.net/gh/basmilius/weather-icons@2.0.0/production/fill/svg
+License: MIT
+Demo:    https://basmilius.github.io/weather-icons/index-fill.html
+
+User choices (decided during planning):
+  - Night icon shown: ONLY for notable nights (precip/storms/snow/fog, not clear/cloudy)
+  - Layout: side by side (day left, night right)
+  - Night icon style: dark pill background
+  - Icon set: Basmilius Meteocons (replacing emojis in forecast only)
+
+================================================================================
+STEP 1: New file — src/utils/meteoconMap.js (~40 lines)
+================================================================================
+
+WMO code -> Basmilius icon name mapping + helper functions.
+
+Exports:
+  - WMO_TO_METEOCON object (28 WMO codes -> { day: 'name', night: 'name' })
+  - getMeteoconUrl(wmoCode, isNight) -> full CDN URL string
+  - meteoconImg(wmoCode, isNight, fallbackEmoji, cssClass) -> <img> HTML string
+    with onerror emoji fallback for CDN failures
+
+WMO-to-Meteocon mapping table:
+
+  WMO 0   (Clear sky)              -> clear-day / clear-night
+  WMO 1   (Mainly clear)           -> clear-day / clear-night
+  WMO 2   (Partly cloudy)          -> partly-cloudy-day / partly-cloudy-night
+  WMO 3   (Overcast)               -> overcast-day / overcast-night
+  WMO 45  (Foggy)                  -> fog-day / fog-night
+  WMO 48  (Rime fog)               -> fog-day / fog-night
+  WMO 51  (Light drizzle)          -> partly-cloudy-day-drizzle / partly-cloudy-night-drizzle
+  WMO 53  (Moderate drizzle)       -> overcast-day-drizzle / overcast-night-drizzle
+  WMO 55  (Dense drizzle)          -> drizzle / drizzle
+  WMO 56  (Light freezing drizzle) -> overcast-day-sleet / overcast-night-sleet
+  WMO 57  (Heavy freezing drizzle) -> sleet / sleet
+  WMO 61  (Slight rain)            -> partly-cloudy-day-rain / partly-cloudy-night-rain
+  WMO 63  (Moderate rain)          -> overcast-day-rain / overcast-night-rain
+  WMO 65  (Heavy rain)             -> extreme-rain / extreme-rain
+  WMO 66  (Light freezing rain)    -> overcast-day-sleet / overcast-night-sleet
+  WMO 67  (Heavy freezing rain)    -> sleet / sleet
+  WMO 71  (Slight snow)            -> partly-cloudy-day-snow / partly-cloudy-night-snow
+  WMO 73  (Moderate snow)          -> overcast-day-snow / overcast-night-snow
+  WMO 75  (Heavy snow)             -> snow / snow
+  WMO 77  (Snow grains)            -> snow / snow
+  WMO 80  (Slight rain showers)    -> partly-cloudy-day-rain / partly-cloudy-night-rain
+  WMO 81  (Moderate rain showers)  -> overcast-day-rain / overcast-night-rain
+  WMO 82  (Violent rain showers)   -> extreme-rain / extreme-rain
+  WMO 85  (Slight snow showers)    -> partly-cloudy-day-snow / partly-cloudy-night-snow
+  WMO 86  (Heavy snow showers)     -> snow / snow
+  WMO 95  (Thunderstorm)           -> thunderstorms-day-rain / thunderstorms-night-rain
+  WMO 96  (Thunderstorm + hail)    -> thunderstorms-day-rain / thunderstorms-night-rain
+  WMO 99  (Thunderstorm + hvy hail)-> thunderstorms-day-rain / thunderstorms-night-rain
+
+Sample implementation:
+
+  const METEOCON_CDN = 'https://cdn.jsdelivr.net/gh/basmilius/weather-icons@2.0.0/production/fill/svg';
+
+  function getMeteoconUrl(wmoCode, isNight) {
+      const entry = WMO_TO_METEOCON[wmoCode];
+      if (!entry) return null;
+      const name = isNight ? entry.night : entry.day;
+      return `${METEOCON_CDN}/${name}.svg`;
+  }
+
+  function meteoconImg(wmoCode, isNight, fallbackEmoji, cssClass) {
+      const url = getMeteoconUrl(wmoCode, isNight);
+      if (!url) return fallbackEmoji;
+      const cls = cssClass ? ` class="${cssClass}"` : '';
+      return `<img src="${url}"${cls} alt="" loading="lazy"
+              onerror="this.replaceWith(document.createTextNode('${fallbackEmoji}'))">`;
+  }
+
+
+================================================================================
+STEP 2: Modify src/utils/dailyIcon.js
+================================================================================
+
+Part A — Add .wmoCode to every result.push() in deriveDailyIcons():
+
+  Currently each push calls getWeatherInfo(code) which returns { desc, icon }.
+  Change each to: result.push({ ...getWeatherInfo(code), wmoCode: code })
+
+  This affects ~8 lines (codes 95, 73, 51, 80, 61, 45, 3, 2, 0).
+  Fully backward compatible — existing .desc and .icon properties unchanged.
+
+Part B — Add new deriveNightlyIcons(hourly, daily) function (~45 lines):
+
+  Algorithm (mirrors deriveDailyIcons but for nighttime):
+  1. For each day in daily.time, collect hourly indices where:
+     - hourly.time[h] starts with the day's date string
+     - hourly.is_day[h] === 0  (nighttime)
+  2. If no nighttime hours, push null and continue.
+  3. Run the same precip-override cascade:
+     - Thunder: >=2 thunder codes OR (>=1 + precip >= 0.05")
+     - Snow: >=2 snow codes
+     - Rain: (>=3 rain codes + precip) OR >=2 high-prob hours OR precip >= 0.05"
+     - Fog: >=3 fog codes
+  4. If any override fires -> push { ...getWeatherInfo(code), wmoCode: code }
+     This is a "notable" night.
+  5. If only sky-state scoring fires (clear/partly cloudy/overcast) -> push null
+     NOT notable — no night icon displayed.
+
+  Reuses existing constants: THUNDER_CODES, SNOW_CODES, RAIN_CODES, FOG_CODES,
+  PRECIP_THRESHOLD.
+
+
+================================================================================
+STEP 3: Modify src/ui/renderDashboard.js
+================================================================================
+
+A) In renderWeatherDashboard() (~line 687):
+   Add:
+     const derivedNightIcons = deriveNightlyIcons(openMeteo.hourly, openMeteo.daily);
+   Update call:
+     renderForecastGrid(openMeteo.daily, derivedIcons, derivedNightIcons, nws, modelComparison, locLabel);
+
+B) Update renderForecastGrid() signature:
+     function renderForecastGrid(daily, derivedIcons, derivedNightIcons, nws, modelComparison, locLabel)
+
+C) Inside the per-day loop:
+   Get day info with wmoCode:
+     const dayInfo = (derivedIcons && derivedIcons[di])
+         || { ...getWeatherInfo(daily.weather_code[di]), wmoCode: daily.weather_code[di] };
+
+   Get night info:
+     const nightInfo = derivedNightIcons ? derivedNightIcons[di] : null;
+
+   Replace icon HTML (currently line 582):
+     BEFORE: <div class="forecast-icon">${dayInfo.icon}</div>
+     AFTER:
+       const dayIconHTML = meteoconImg(dayInfo.wmoCode, false, dayInfo.icon, 'meteocon-day');
+       const nightIconHTML = nightInfo
+           ? `<span class="night-icon-pill">${meteoconImg(nightInfo.wmoCode, true, nightInfo.icon, 'meteocon-night')}</span>`
+           : '';
+       // In template:
+       <div class="forecast-icon forecast-icon-duo">${dayIconHTML}${nightIconHTML}</div>
+
+D) Add to forecastDays array entries (~line 556):
+     wmoCode: dayInfo.wmoCode,
+     nightIcon: nightInfo ? nightInfo.icon : null,
+     nightDesc: nightInfo ? nightInfo.desc : null,
+     nightWmoCode: nightInfo ? nightInfo.wmoCode : null,
+
+
+================================================================================
+STEP 4: Modify src/ui/forecastModal.js
+================================================================================
+
+Update renderForecastDetailDay() (~line 47):
+
+  BEFORE:
+    <span class="fd-icon">${d.icon}</span>
+    <span class="fd-condition">${d.desc}</span>
+
+  AFTER:
+    const dayImg = meteoconImg(d.wmoCode, false, d.icon, 'meteocon-detail-day');
+    const nightImg = d.nightWmoCode
+        ? `<span class="night-icon-pill fd-night-pill">${meteoconImg(d.nightWmoCode, true, d.nightIcon, 'meteocon-detail-night')}</span>`
+        : '';
+
+    <span class="fd-icon">${dayImg}${nightImg}</span>
+    <span class="fd-condition">${d.desc}${d.nightDesc ? ` / ${d.nightDesc} tonight` : ''}</span>
+
+
+================================================================================
+STEP 5: Add CSS to css/styles.css (~35 lines new)
+================================================================================
+
+Near existing .forecast-icon block (~line 873):
+
+  /* Basmilius Meteocon sizing */
+  .forecast-icon img.meteocon-day,
+  .forecast-icon img.meteocon-night {
+      width: 2.5rem;
+      height: 2.5rem;
+      vertical-align: middle;
+  }
+
+  /* Side-by-side day + night layout */
+  .forecast-icon.forecast-icon-duo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      height: auto;
+      line-height: normal;
+  }
+
+  /* Night icon dark pill background */
+  .night-icon-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 20, 40, 0.85);
+      border-radius: 8px;
+      padding: 0.15rem 0.25rem;
+      border: 1px solid rgba(100, 120, 180, 0.3);
+  }
+
+  .night-icon-pill img.meteocon-night {
+      width: 2rem;
+      height: 2rem;
+  }
+
+  /* Forecast detail modal icons */
+  .fd-icon img.meteocon-detail-day {
+      width: 3rem;
+      height: 3rem;
+      vertical-align: middle;
+  }
+
+  .fd-night-pill { margin-left: 0.5rem; }
+
+  .fd-night-pill img.meteocon-detail-night {
+      width: 2.5rem;
+      height: 2.5rem;
+  }
+
+  /* Mobile responsive (@media max-width: 480px) */
+  .forecast-icon img.meteocon-day { width: 1.8rem; height: 1.8rem; }
+  .night-icon-pill img.meteocon-night { width: 1.5rem; height: 1.5rem; }
+
+
+================================================================================
+STEP 6: Wire up in index.html
+================================================================================
+
+After line 119 (<script src="src/utils/dailyIcon.js"></script>):
+  <script src="src/utils/meteoconMap.js"></script>
+
+Bump cache-busting query strings:
+  css/styles.css?v=1.4.0 -> css/styles.css?v=1.5.0
+  src/ui/renderDashboard.js?v=1.9.0 -> src/ui/renderDashboard.js?v=1.10.0
+
+
+================================================================================
+STEP 7: Bump sw.js
+================================================================================
+
+  CACHE_NAME: 'weather-hq-v1.14.0' -> 'weather-hq-v1.15.0'
+  Add to PRECACHE_URLS: 'src/utils/meteoconMap.js'
+
+  Do NOT precache CDN icon URLs — they load on demand and are cached by
+  browser/CDN headers. The weather app requires internet anyway.
+
+
+================================================================================
+FILES TOUCHED
+================================================================================
+
+  NEW:    src/utils/meteoconMap.js       — WMO->Basmilius mapping (~40 lines)
+  MODIFY: src/utils/dailyIcon.js         — add .wmoCode + deriveNightlyIcons()
+  MODIFY: src/ui/renderDashboard.js      — update forecast icon rendering
+  MODIFY: src/ui/forecastModal.js        — update detail modal icon
+  MODIFY: css/styles.css                 — meteocon sizing, duo layout, night pill
+  MODIFY: index.html                     — script tag + cache-bust versions
+  MODIFY: sw.js                          — version bump + precache entry
+
+  Total new code: ~130 lines across all files
+  New dependencies: NONE (CDN-loaded SVGs, not a package)
+
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+  [ ] Basmilius SVG icons render in forecast grid (replace emojis)
+  [ ] Day with notable night precip shows night pill with correct icon
+  [ ] Day with clear/cloudy night shows NO night icon
+  [ ] Click a forecast day — detail modal shows Basmilius icons
+  [ ] No console errors on load
+  [ ] Mobile layout at 375px — icons fit side-by-side
+  [ ] CDN failure test (block jsDelivr) — emojis appear as fallback
+  [ ] Hourly strip + current conditions still show emojis (unchanged)
+
+
+================================================================================
+EDGE CASES & MITIGATIONS
+================================================================================
+
+  CDN failure:       onerror on <img> replaces with emoji text node
+  Offline/PWA:       emojis fallback; weather data needs internet anyway
+  Animation perf:    max ~14 animated SVGs visible; well within mobile GPU budget
+  Layout shift:      explicit CSS width/height prevents CLS
+  Night hours:       Open-Meteo hourly is local tz; 12am-sunrise + sunset-midnight
+                     both captured by startsWith(dayDate) + is_day===0 filter
+  forecastDays:      new fields (wmoCode, nightWmoCode, etc.) are additive —
+                     existing code reading .desc/.icon is unaffected
+
+
+================================================================================
+FUTURE EXTENSIONS (not in this plan)
+================================================================================
+
+  - Extend Basmilius icons to hourly strip
+  - Extend Basmilius icons to current conditions card
+  - Add prefers-reduced-motion to disable SVG animations
+  - Precache frequently-used icon URLs in service worker

@@ -72,24 +72,29 @@ function deriveDailyIcons(hourly, daily) {
         }
 
         // --- Sky-state scoring (daytime only, no precip) ---
-        // Filter to sky-only codes (0-3) for scoring; precip-coded hours that didn't
-        // trigger overrides above are treated as cloudy (WMO 3)
-        let sunnyCount = 0;   // WMO 0 + 1
-        let partlyCount = 0;  // WMO 2
-        let cloudyCount = 0;  // WMO 3 + any leftover precip codes
+        // Four buckets: Clear (WMO 0), Mainly Clear (WMO 1), Partly Cloudy (WMO 2),
+        // Cloudy (WMO 3 + leftover precip codes that didn't meet override thresholds)
+        let clearCount = 0;        // WMO 0
+        let mainlyClearCount = 0;  // WMO 1
+        let partlyCount = 0;       // WMO 2
+        let cloudyCount = 0;       // WMO 3 + any leftover precip codes
 
         for (const c of codes) {
-            if (c === 0 || c === 1) sunnyCount++;
+            if (c === 0) clearCount++;
+            else if (c === 1) mainlyClearCount++;
             else if (c === 2) partlyCount++;
-            else cloudyCount++; // WMO 3 + fog/precip codes that didn't meet override thresholds
+            else cloudyCount++;
         }
 
         // Cloudy must win by >=2 margin to show cloudy icon
-        if (cloudyCount > sunnyCount + 2 && cloudyCount > partlyCount + 2) {
+        const bestNonCloudy = Math.max(clearCount, mainlyClearCount, partlyCount);
+        if (cloudyCount > bestNonCloudy + 2) {
             result.push(getWeatherInfo(3));
-        } else if (partlyCount >= sunnyCount && partlyCount >= cloudyCount) {
+        } else if (partlyCount >= clearCount && partlyCount >= mainlyClearCount && partlyCount >= cloudyCount) {
             result.push(getWeatherInfo(2));
-        } else if (sunnyCount >= partlyCount && sunnyCount >= cloudyCount) {
+        } else if (mainlyClearCount >= clearCount && mainlyClearCount >= partlyCount && mainlyClearCount >= cloudyCount) {
+            result.push(getWeatherInfo(1));
+        } else if (clearCount >= mainlyClearCount && clearCount >= partlyCount && clearCount >= cloudyCount) {
             result.push(getWeatherInfo(0));
         } else {
             // Mixed — bias toward partly cloudy
