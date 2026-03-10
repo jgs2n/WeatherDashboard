@@ -153,6 +153,33 @@ body {
     display: inline-block;
 }
 
+/* Settings button — hidden by default, shown on mobile */
+.settings-btn {
+    display: none;
+    background: var(--bg-card);
+    border: 1.5px solid var(--border);
+    color: var(--text-secondary);
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+.settings-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+.settings-btn:active {
+    transform: scale(0.95);
+}
+.settings-icon {
+    font-size: 1rem;
+    display: inline-block;
+}
+
 .last-updated {
     font-size: 0.55rem;
     color: var(--text-secondary);
@@ -426,10 +453,24 @@ body {
     gap: 1.5rem;
     margin-bottom: 1.5rem;
 }
+/* Desktop: pin current + forecast side-by-side regardless of DOM order */
+.grid .current-card  { grid-column: 1; grid-row: 1; }
+.grid .forecast-card { grid-column: 2; grid-row: 1; }
+.grid .hourly-card,
+.grid .satellite-card,
+.grid .timestamp     { grid-column: 1 / -1; }
 
 @media (max-width: 1024px) and (orientation: portrait) {
     .grid {
         grid-template-columns: 1fr;
+    }
+    .grid .current-card,
+    .grid .forecast-card,
+    .grid .hourly-card,
+    .grid .satellite-card,
+    .grid .timestamp {
+        grid-column: 1;
+        grid-row: auto;
     }
 }
 
@@ -2113,6 +2154,9 @@ body {
 
 /* ===== TABLET PORTRAIT — 768px to 1024px portrait (matches mobile layout) ===== */
 @media (max-width: 1024px) and (min-width: 769px) and (orientation: portrait) {
+    .settings-btn {
+        display: flex;
+    }
     #appShell {
         padding: 1rem;
     }
@@ -2126,6 +2170,14 @@ body {
         grid-template-columns: 1fr;
         gap: 1rem;
         margin-bottom: 1rem;
+    }
+    .grid .current-card,
+    .grid .forecast-card,
+    .grid .hourly-card,
+    .grid .satellite-card,
+    .grid .timestamp {
+        grid-column: 1;
+        grid-row: auto;
     }
     .card {
         padding: 1.1rem;
@@ -2269,6 +2321,9 @@ body {
 
 /* ===== MOBILE (iPhone / small screens) — max 768px ===== */
 @media (max-width: 768px) {
+    .settings-btn {
+        display: flex;
+    }
     #appShell {
         padding: 0.75rem;
     }
@@ -2287,6 +2342,14 @@ body {
         grid-template-columns: 1fr;
         gap: 1rem;
         margin-bottom: 1rem;
+    }
+    .grid .current-card,
+    .grid .forecast-card,
+    .grid .hourly-card,
+    .grid .satellite-card,
+    .grid .timestamp {
+        grid-column: 1;
+        grid-row: auto;
     }
     .hourly-card {
         margin-bottom: 1rem;
@@ -3475,4 +3538,148 @@ body {
     .alm-search-section { padding: 0 1.25rem; }
     .alm-coords-section { padding: 0.75rem 1.25rem 1.25rem; }
     .alm-results { max-height: 200px; }
+}
+
+/* ===== SETTINGS MODAL ===== */
+.settings-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+    z-index: 10001;
+    animation: fadeIn 0.2s ease;
+    padding: 1rem;
+}
+.settings-overlay.visible {
+    display: flex;
+}
+.settings-content {
+    background: var(--bg-card);
+    border: 2px solid var(--accent-primary);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 400px;
+    max-height: 88vh;
+    overflow-y: auto;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 212, 255, 0.08);
+    animation: slideUp 0.25s ease;
+}
+.settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.25rem 1.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.settings-header h3 {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.7rem;
+    letter-spacing: 0.15rem;
+    color: var(--accent-primary);
+    margin: 0;
+}
+.settings-close {
+    background: none;
+    border: 2px solid var(--border);
+    color: var(--text-primary);
+    font-size: 1.4rem;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.settings-close:hover {
+    border-color: var(--accent-secondary);
+    color: var(--accent-secondary);
+    transform: rotate(90deg);
+}
+.settings-body {
+    padding: 1.25rem 1.5rem;
+}
+.settings-section-title {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.2rem;
+    letter-spacing: 0.1rem;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+.settings-section-desc {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+}
+.settings-reorder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.settings-reorder-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.65rem 0.85rem;
+}
+.settings-reorder-arrows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.settings-arrow-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    width: 28px;
+    height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.6rem;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+.settings-arrow-btn:hover:not(:disabled) {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+.settings-arrow-btn:active:not(:disabled) {
+    transform: scale(0.92);
+}
+.settings-arrow-btn:disabled {
+    opacity: 0.25;
+    cursor: default;
+}
+.settings-reorder-label {
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.settings-reset-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    width: 100%;
+}
+.settings-reset-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
 }

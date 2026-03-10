@@ -326,7 +326,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
     );
 
     return `
-        <div class="card">
+        <div class="card current-card">
             <div class="card-header">
                 <div class="card-title">CURRENT — ${locLabel}</div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -687,20 +687,18 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
     const forecastGridHTML = renderForecastGrid(openMeteo.daily, nws, modelComparison, locLabel);
     const hourlyStripHTML = renderHourlyStrip(openMeteo.hourly, openMeteo.current, locLabel);
 
+    const satelliteHTML = `<div class="card satellite-card"><!-- Radar section rendered by renderRadarSection() --></div>`;
+    const timestampHTML = `<div class="timestamp">Location: ${location.name}, ${location.country} | <span style="opacity: 0.6;">v${APP_VERSION}</span> | <a href="about.html" target="_blank" rel="noopener" class="timestamp-about-link">About</a></div>`;
+
+    // Build section order (mobile-customizable)
+    const sectionMap = { hourly: hourlyStripHTML, forecast: forecastGridHTML, satellite: satelliteHTML };
+    const orderedSections = sectionOrder.map(key => sectionMap[key] || '').join('\n');
+
     container.innerHTML = `
         <div class="grid">
             ${currentCardHTML}
-            ${forecastGridHTML}
-        </div>
-
-        ${hourlyStripHTML}
-
-        <div class="card satellite-card">
-            <!-- Radar section rendered by renderRadarSection() -->
-        </div>
-
-        <div class="timestamp">
-            Location: ${location.name}, ${location.country} | <span style="opacity: 0.6;">v${APP_VERSION}</span> | <a href="about.html" target="_blank" rel="noopener" class="timestamp-about-link">About</a>
+            ${orderedSections}
+            ${timestampHTML}
         </div>
     `;
 

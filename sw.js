@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.11.0';
+const CACHE_NAME = 'weather-hq-v1.12.0';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
@@ -26,7 +26,7 @@ const PRECACHE_URLS = [
     'src/ui/forecastModal.js',
     'src/ui/hourly.js',
     'src/ui/share.js',
-    'src/ui/renderDashboard.js?v=1.8.5',
+    'src/ui/renderDashboard.js?v=1.9.0',
     'src/ui/tabDrag.js',
     'src/main.js',
     'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap'

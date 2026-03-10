@@ -44,6 +44,11 @@ let cachedStationObs = null;
 // Tooltip state
 let activeTooltip = null;
 
+// Section order (mobile layout customization)
+const SECTION_ORDER_KEY = 'sectionOrder';
+const DEFAULT_SECTION_ORDER = ['forecast', 'hourly', 'satellite'];
+let sectionOrder = [...DEFAULT_SECTION_ORDER];
+
 // Nowcast state
 let cachedNowSummary = null;
 let _nowcastPollTimer = null;
@@ -63,6 +68,9 @@ function loadSavedLocations() {
         // Start with empty locations for new users
         savedLocations = [];
     }
+    // Load section order
+    loadSectionOrder();
+
     const storedNWS = localStorage.getItem('nwsShowByDefault');
     nwsShowByDefault = storedNWS !== null ? storedNWS === 'true' : null;
 
@@ -100,6 +108,27 @@ function loadNowcastState() {
     } catch (e) {
         console.warn('[Nowcast] Failed to load stored state:', e.message);
     }
+}
+
+// Load section order from localStorage
+function loadSectionOrder() {
+    try {
+        const stored = localStorage.getItem(SECTION_ORDER_KEY);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length === 3) {
+                sectionOrder = parsed;
+            }
+        }
+    } catch (e) {
+        console.warn('[Settings] Failed to load section order:', e.message);
+    }
+}
+
+// Save section order to localStorage
+function saveSectionOrder(order) {
+    sectionOrder = order;
+    localStorage.setItem(SECTION_ORDER_KEY, JSON.stringify(order));
 }
 
 // Save nowcast state to localStorage

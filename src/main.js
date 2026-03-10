@@ -261,6 +261,89 @@ function toggleNWS(checked) {
     nwsShowByDefault = checked;
 }
 
+// ─── Settings modal ──────────────────────────────────────────────────────────
+
+const SECTION_LABELS = { hourly: 'Next 48 Hours', forecast: 'Daily Forecast', satellite: 'Weather Maps' };
+
+function openSettings() {
+    const overlay = document.getElementById('settingsOverlay');
+    const body = document.getElementById('settingsBody');
+    renderSettingsBody(body);
+    overlay.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeSettings() {
+    document.getElementById('settingsOverlay').classList.remove('visible');
+    document.body.style.overflow = '';
+}
+
+function renderSettingsBody(body) {
+    const order = [...sectionOrder];
+    body.innerHTML = `
+        <div class="settings-section">
+            <div class="settings-section-title">Section Order</div>
+            <div class="settings-section-desc">Reorder dashboard sections on mobile</div>
+            <div class="settings-reorder-list" id="settingsReorderList">
+                ${order.map((key, i) => `
+                    <div class="settings-reorder-item" data-key="${key}">
+                        <div class="settings-reorder-arrows">
+                            <button class="settings-arrow-btn" ${i === 0 ? 'disabled' : ''} onclick="moveSection('${key}', -1)">▲</button>
+                            <button class="settings-arrow-btn" ${i === order.length - 1 ? 'disabled' : ''} onclick="moveSection('${key}', 1)">▼</button>
+                        </div>
+                        <span class="settings-reorder-label">${SECTION_LABELS[key]}</span>
+                    </div>
+                `).join('')}
+            </div>
+            <button class="settings-reset-btn" onclick="resetSectionOrder()">Reset to Default</button>
+        </div>
+    `;
+}
+
+function moveSection(key, direction) {
+    const order = [...sectionOrder];
+    const idx = order.indexOf(key);
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= order.length) return;
+    [order[idx], order[newIdx]] = [order[newIdx], order[idx]];
+    saveSectionOrder(order);
+    renderSettingsBody(document.getElementById('settingsBody'));
+    // Re-render dashboard if data is loaded
+    if (activeLocation && document.querySelector('.grid')) {
+        reRenderDashboardOrder();
+    }
+}
+
+function resetSectionOrder() {
+    saveSectionOrder([...DEFAULT_SECTION_ORDER]);
+    renderSettingsBody(document.getElementById('settingsBody'));
+    if (activeLocation && document.querySelector('.grid')) {
+        reRenderDashboardOrder();
+    }
+}
+
+function reRenderDashboardOrder() {
+    const grid = document.querySelector('.grid');
+    if (!grid) return;
+    const sections = {
+        hourly: grid.querySelector('.hourly-card'),
+        forecast: grid.querySelector('.forecast-card'),
+        satellite: grid.querySelector('.satellite-card')
+    };
+    const currentCard = grid.querySelector('.current-card');
+    const timestamp = grid.querySelector('.timestamp');
+    if (!currentCard) return;
+    // Detach all, re-append in order
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(currentCard);
+    for (const key of sectionOrder) {
+        if (sections[key]) fragment.appendChild(sections[key]);
+    }
+    if (timestamp) fragment.appendChild(timestamp);
+    grid.innerHTML = '';
+    grid.appendChild(fragment);
+}
+
 // Close modals on Escape key
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
@@ -274,6 +357,8 @@ document.addEventListener('keydown', e => {
             closeForecastDetail();
         } else if (document.getElementById('obsDetailOverlay') && document.getElementById('obsDetailOverlay').classList.contains('visible')) {
             closeConditionDetail();
+        } else if (document.getElementById('settingsOverlay').classList.contains('visible')) {
+            closeSettings();
         } else {
             closeAlertModal();
         }
