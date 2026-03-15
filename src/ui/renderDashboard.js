@@ -1,6 +1,8 @@
 // Dashboard rendering — current card, forecast grid, hourly strip, radar section
 // Globals read/written: cachedHourlyData, activeHourlyIndex, forecastDays, cachedAlerts,
-//                       nwsShowByDefault, activeRadarView, showForecastTimeline, locationTemps
+//                       nwsShowByDefault, activeRadarView, showForecastTimeline, locationTemps,
+//                       cachedSPCOutlook
+let cachedSPCOutlook = null;
 // Utils: WEATHER_CODES, calculateFireRisk, getPressureTrend, formatSunTime, getWindDirection,
 //        getAQICategory, getMoonPhase, getMoonTimes, escapeHTML, extractDisplayName
 
@@ -131,16 +133,16 @@ function _applyLightningConditionOverride(displayCondition, precipPhenomenon, ls
 
     if (ls.state === 'active') {
         if (precipPhenomenon === 'heavy rain' || precipPhenomenon === 'rain') {
-            return { desc: 'Thunderstorm', icon: '\u26C8\uFE0F' };
+            return { desc: 'Thunderstorm', icon: 'thunderstorms-day-rain' };
         }
         if (precipPhenomenon === 'drizzle') {
-            return { desc: 'Rain \u2014 thunder nearby', icon: '\u26C8\uFE0F' };
+            return { desc: 'Rain \u2014 thunder nearby', icon: 'thunderstorms-day-rain' };
         }
         if (precipPhenomenon === 'snow') {
-            return { desc: 'Snow \u2014 thunder nearby', icon: '\uD83C\uDF28\uFE0F' };
+            return { desc: 'Snow \u2014 thunder nearby', icon: 'snow' };
         }
         if (precipPhenomenon === 'dry' && ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
-            return { desc: 'Thunder nearby', icon: '\u26C8\uFE0F' };
+            return { desc: 'Thunder nearby', icon: 'thunderstorms-day-rain' };
         }
     }
 
@@ -149,7 +151,7 @@ function _applyLightningConditionOverride(displayCondition, precipPhenomenon, ls
             return { desc: 'Rain \u2014 thunder nearby', icon: displayCondition.icon };
         }
         if (precipPhenomenon === 'snow') {
-            return { desc: 'Snow \u2014 thunder nearby', icon: '\uD83C\uDF28\uFE0F' };
+            return { desc: 'Snow \u2014 thunder nearby', icon: 'snow' };
         }
     }
 
@@ -213,20 +215,27 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
     const _ls = nowSummary && nowSummary.lightningState;
     const _precipPhenomenon = nowSummary && nowSummary.precipStateNow
         ? nowSummary.precipStateNow.phenomenon : 'dry';
+    const _preOverrideDesc = displayCondition.desc;
     displayCondition = _applyLightningConditionOverride(displayCondition, _precipPhenomenon, _ls);
 
-    // Build rain timing HTML — confidence-aware prose from precipTrend60m
-    let rainTimingHTML = '';
-    if (_trend && _trend.summary) {
-        rainTimingHTML = `<div class="nowcast-rain-timing">\uD83C\uDF27\uFE0F ${_trend.summary}</div>`;
+    // Build icon rationale — explains why this icon was chosen
+    let _rationale = '';
+    if (_isWet) {
+        const ps = nowSummary.precipStateNow;
+        const dbzNote = ps.source === 'NEXRAD' || ps.source === 'RainViewer'
+            ? ` (${Math.round(ps.confidence * 100)}% confidence)`
+            : '';
+        _rationale = `${ps.source} detecting ${ps.desc.toLowerCase()}${dbzNote}.`;
+    } else if (_sky) {
+        _rationale = `${_sky.source} observing ${_sky.desc.toLowerCase()}.`;
+    } else {
+        _rationale = `Model forecast (WMO ${current.weather_code}): ${weatherInfo.desc}.`;
+    }
+    if (displayCondition.desc !== _preOverrideDesc && _ls) {
+        _rationale += ` Lightning ${_ls.state} (${_ls.source}) promoted to ${displayCondition.desc}.`;
     }
 
-    // Build lightning line HTML (replaces old thunder line)
-    let thunderHTML = '';
-    const _lsLineText = _lightningLineText(nowSummary && nowSummary.lightningState);
-    if (_lsLineText) {
-        thunderHTML = `<div class="nowcast-thunder-line">${_lsLineText}</div>`;
-    }
+    // Rain timing and lightning are now rendered in the blue hazard lane
 
     const fireRisk = calculateFireRisk(current.temperature_2m, current.relative_humidity_2m, current.wind_speed_10m);
     const pressureTrend = getPressureTrend(openMeteo.hourly);
@@ -271,51 +280,8 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
         if (rpSliced) precipHTML = renderPrecipSpark(rpSliced);
     }
 
-    // Build alert banners and cache alert data
-    let alertBannerHTML = '';
-    if (nws && nws.alerts && nws.alerts.features && nws.alerts.features.length > 0) {
-        const now = new Date();
-        cachedAlerts = { active: [], upcoming: [] };
-
-        nws.alerts.features.forEach(alert => {
-            const onset = new Date(alert.properties.onset);
-            if (onset <= now) {
-                cachedAlerts.active.push(alert);
-            } else {
-                cachedAlerts.upcoming.push(alert);
-            }
-        });
-
-        const totalCount = cachedAlerts.active.length + cachedAlerts.upcoming.length;
-
-        if (cachedAlerts.active.length > 0) {
-            const firstEvent = cachedAlerts.active[0].properties.event;
-            const extra = totalCount > 1 ? ` + ${totalCount - 1} more` : '';
-            alertBannerHTML += `
-                <div class="alert-banner severity-active" onclick="openAlertModal()">
-                    <span class="alert-banner-icon">🚨</span>
-                    <div class="alert-banner-text">
-                        <div class="alert-banner-event">${firstEvent}${extra}</div>
-                    </div>
-                    <span class="alert-banner-arrow">▸</span>
-                </div>
-            `;
-        } else if (cachedAlerts.upcoming.length > 0) {
-            const firstEvent = cachedAlerts.upcoming[0].properties.event;
-            const extra = totalCount > 1 ? ` + ${totalCount - 1} more` : '';
-            alertBannerHTML += `
-                <div class="alert-banner severity-upcoming" onclick="openAlertModal()">
-                    <span class="alert-banner-icon">🔔</span>
-                    <div class="alert-banner-text">
-                        <div class="alert-banner-event">${firstEvent}${extra}</div>
-                    </div>
-                    <span class="alert-banner-arrow">▸</span>
-                </div>
-            `;
-        }
-    } else {
-        cachedAlerts = { active: [], upcoming: [] };
-    }
+    // Alert data is populated by updateRedLane in Tier 2
+    cachedAlerts = { active: [], upcoming: [] };
 
     const moon = getMoonPhase();
     const dirClass = moon.direction === '▼' ? 'waning' : '';
@@ -340,16 +306,37 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                     </button>
                 </div>
             </div>
-            ${alertBannerHTML}
+            <div class="hazard-panel">
+                <div class="hazard-lane lane-red alert-none" id="hazard-red" onclick="openAlertModal()">
+                    <div class="lane-label">NWS Alerts</div>
+                    <div class="lane-body">
+                        <div class="lane-status">None</div>
+                    </div>
+                    <span class="lane-arrow">▸</span>
+                </div>
+                <div class="hazard-lane lane-yellow spc-none" id="hazard-yellow" onclick="openForecastRiskModal()">
+                    <div class="lane-label">Storm Risk</div>
+                    <div class="lane-body">
+                        <div class="lane-status">None</div>
+                    </div>
+                    <span class="lane-arrow">▸</span>
+                </div>
+                <div class="hazard-lane lane-blue storm-quiet" id="hazard-blue">
+                    <div class="lane-label">Storms Nearby</div>
+                    <div class="lane-body">
+                        <div class="lane-status">Quiet</div>
+                        <div class="lane-secondary"></div>
+                    </div>
+                </div>
+            </div>
             <div class="weather-main">
                 <div class="temperature">${Math.round(current.temperature_2m)}°F</div>
                 ${renderWindCompass(current.wind_direction_10m, Math.round(current.wind_speed_10m), Math.round(current.wind_gusts_10m), false, false)}
-                <div class="weather-icon-wrap">
-                    <div class="weather-icon">${displayCondition.icon}</div>
+                <div class="weather-icon-wrap" onclick="this.querySelector('.nowcast-rationale').classList.toggle('visible')" style="cursor:pointer" title="Tap for icon rationale">
+                    <div class="weather-icon">${weatherIconImg(displayCondition.icon, 'condition-icon')}</div>
                     <div class="weather-condition">${displayCondition.desc}</div>
                     <div class="nowcast-subtitle">${conditionSubtitle}</div>
-                    ${rainTimingHTML}
-                    ${thunderHTML}
+                    <div class="nowcast-rationale">${_rationale}</div>
                 </div>
             </div>
             <div class="weather-details">
@@ -418,7 +405,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
 }
 
 // 10-day forecast grid — returns HTML string, writes forecastDays global
-function renderForecastGrid(daily, derivedIcons, nws, modelComparison, locLabel) {
+function renderForecastGrid(daily, derivedIcons, derivedNightIcons, nws, modelComparison, locLabel) {
     // Build model confidence spread for each day
     const modelSpread = [];
     if (modelComparison && modelComparison.daily) {
@@ -481,6 +468,9 @@ function renderForecastGrid(daily, derivedIcons, nws, modelComparison, locLabel)
     const forecastHTML = daily.time.slice(startIdx, startIdx + 7).map((date, i) => {
         const di = startIdx + i; // index into daily arrays (offset by past days)
         const dayInfo = (derivedIcons && derivedIcons[di]) || getWeatherInfo(daily.weather_code[di]);
+        const _baseIcon = n => n.replace(/-day\b|-night\b/, '').replace(/^drizzle$/, 'rain');
+        const _rawNight = derivedNightIcons ? derivedNightIcons[di] : null;
+        const nightInfo = (_rawNight && _baseIcon(_rawNight.icon) !== _baseIcon(dayInfo.icon)) ? _rawNight : null;
 
         const dateParts = date.split('-');
         const year = parseInt(dateParts[0]);
@@ -556,6 +546,8 @@ function renderForecastGrid(daily, derivedIcons, nws, modelComparison, locLabel)
         forecastDays.push({
             dayName, fullDayName, dateDisplay,
             icon: dayInfo.icon, desc: dayInfo.desc,
+            nightIcon: nightInfo ? nightInfo.icon : null,
+            nightDesc: nightInfo ? nightInfo.desc : null,
             high: bestHigh, low: bestLow,
             highDisplay, lowDisplay, hasSpread, tooltipData,
             precipProb, precipAmount, snowfall,
@@ -579,7 +571,7 @@ function renderForecastGrid(daily, derivedIcons, nws, modelComparison, locLabel)
             <div class="forecast-item" onclick="openForecastDetail(${i})">
                 <div class="forecast-day">${dayName}</div>
                 <div class="forecast-date">${dateDisplay}</div>
-                <div class="forecast-icon">${dayInfo.icon}</div>
+                <div class="forecast-icon${nightInfo ? ' forecast-icon-duo' : ''}">${weatherIconImg(dayInfo.icon, 'forecast-icon-img')}${nightInfo ? `<span class="night-icon-pill">${weatherIconImg(nightInfo.icon, 'forecast-night-icon')}</span>` : ''}</div>
                 <div class="forecast-temp-range ${hasSpread ? 'has-model-spread' : ''}"
                      ${hasSpread ? `onclick="showModelTooltip(event, '${tooltipData}')" data-tooltip="${tooltipData}"` : ''}>
                     <div class="temp-high">${highDisplay}</div>
@@ -626,9 +618,10 @@ function renderHourlyStrip(hourly, current, locLabel) {
     for (let i = startIndex; i < endIndex; i++) {
         const time = new Date(hourly.time[i]);
         const isNow = i === startIndex;
-        const hourInfo = isNow && current
-            ? getWeatherInfo(current.weather_code)
-            : getWeatherInfo(hourly.weather_code[i]);
+        const hourCode = isNow && current ? current.weather_code : hourly.weather_code[i];
+        const hourIsDay = hourly.is_day[i] === 1;
+        const hourIconName = getWeatherIcon(hourCode, hourIsDay);
+        const hourInfo = getWeatherInfo(hourCode);
         const temp = isNow && current ? Math.round(current.temperature_2m) : Math.round(hourly.temperature_2m[i]);
         const precip = hourly.precipitation_probability[i] || 0;  // always from hourly
         const precipAmt = hourly.precipitation[i] || 0;
@@ -651,7 +644,7 @@ function renderHourlyStrip(hourly, current, locLabel) {
         pills.push(`
             <div class="hourly-pill ${isNow ? 'now-pill' : ''}" data-hourly-index="${i}" onclick="toggleHourlyDetail(${i})">
                 <span class="hourly-time">${timeLabel}</span>
-                <span class="hourly-icon">${hourInfo.icon}</span>
+                <span class="hourly-icon">${weatherIconImg(hourIconName, 'hourly-icon-img')}</span>
                 <span class="hourly-temp">${temp}°</span>
                 ${precip > 0 ? `<span class="hourly-precip has-precip${precipIntensity.type !== 'none' ? ` precip-${precipIntensity.type}-${precipIntensity.level}` : ''}">${precipIntensity.type === 'snow' ? '❄️' : '💧'}${precip}%</span>` : `<span class="hourly-precip">&nbsp;</span>`}
                 ${renderWindCompass(windDir, wind, gusts, true)}
@@ -677,6 +670,350 @@ function renderHourlyStrip(hourly, current, locLabel) {
     `;
 }
 
+// ─── Lazy radar loading ──────────────────────────────────────────────────────
+
+function lazyLoadRadar(location) {
+    const radarCard = document.querySelector('.satellite-card');
+    if (!radarCard) return;
+
+    radarCard.innerHTML = `
+        <div class="card-header">
+            <div class="card-title">WEATHER MAPS — ${extractDisplayName(location.name)}</div>
+            <div class="source-badge">Windy</div>
+        </div>
+        <div class="skeleton-block skeleton-map"></div>
+    `;
+
+    if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting) {
+                observer.disconnect();
+                renderRadarSection(location);
+            }
+        }, { rootMargin: '200px' });
+        observer.observe(radarCard);
+    } else {
+        setTimeout(() => renderRadarSection(location), 2000);
+    }
+}
+
+// ─── Tier 2 in-place updaters ────────────────────────────────────────────────
+
+// ─── Hazard lane updaters ────────────────────────────────────────────────────
+
+const _CRITICAL_EVENTS = [
+    'Tornado Warning', 'Flash Flood Warning', 'Extreme Wind Warning',
+    'Storm Surge Warning', 'Tsunami Warning', 'Hurricane Warning'
+];
+
+function _classifyAlert(event) {
+    const e = event || '';
+    if (_CRITICAL_EVENTS.some(c => e.includes(c))) return 'alert-critical';
+    if (e.includes('Warning')) return 'alert-warning';
+    if (e.includes('Watch'))   return 'alert-watch';
+    return 'alert-advisory';
+}
+
+const _ALERT_PRIORITY = { 'alert-critical': 4, 'alert-warning': 3, 'alert-watch': 2, 'alert-advisory': 1 };
+
+function updateRedLane(nws) {
+    const lane = document.getElementById('hazard-red');
+    if (!lane) return;
+
+    // Parse alerts
+    if (nws && nws.alerts && nws.alerts.features && nws.alerts.features.length > 0) {
+        const now = new Date();
+        cachedAlerts = { active: [], upcoming: [] };
+        nws.alerts.features.forEach(a => {
+            const onset = new Date(a.properties.onset);
+            if (onset <= now) cachedAlerts.active.push(a);
+            else cachedAlerts.upcoming.push(a);
+        });
+    } else {
+        cachedAlerts = { active: [], upcoming: [] };
+    }
+
+    const allAlerts = [...cachedAlerts.active, ...cachedAlerts.upcoming];
+    // Reset classes
+    lane.className = 'hazard-lane lane-red';
+
+    if (allAlerts.length === 0) {
+        lane.classList.add('alert-none');
+        lane.querySelector('.lane-status').textContent = 'None';
+        return;
+    }
+
+    // Find highest priority alert
+    let bestAlert = allAlerts[0];
+    let bestClass = _classifyAlert(bestAlert.properties.event);
+    for (let i = 1; i < allAlerts.length; i++) {
+        const cls = _classifyAlert(allAlerts[i].properties.event);
+        if ((_ALERT_PRIORITY[cls] || 0) > (_ALERT_PRIORITY[bestClass] || 0)) {
+            bestAlert = allAlerts[i]; bestClass = cls;
+        }
+    }
+
+    lane.classList.add(bestClass);
+    let text = allAlerts.length === 1 ? bestAlert.properties.event : `${allAlerts.length} NWS Alerts`;
+    // Append time period for the highest-priority alert
+    const expires = bestAlert.properties.expires || bestAlert.properties.ends;
+    if (expires) {
+        const exp = new Date(expires);
+        if (!isNaN(exp)) {
+            text += ' · through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+                ' ' + exp.toLocaleDateString([], { weekday: 'short' });
+        }
+    }
+    lane.querySelector('.lane-status').textContent = text;
+}
+
+function updateYellowLane(spcData) {
+    const lane = document.getElementById('hazard-yellow');
+    if (!lane) return;
+
+    lane.className = 'hazard-lane lane-yellow';
+
+    if (!spcData) {
+        lane.classList.add('spc-none');
+        lane.querySelector('.lane-status').textContent = 'None';
+        return;
+    }
+
+    cachedSPCOutlook = spcData;
+    const classMap = { MRGL: 'spc-mrgl', SLGT: 'spc-slgt', ENH: 'spc-enh', MDT: 'spc-mdt', HIGH: 'spc-high' };
+    lane.classList.add(classMap[spcData.category] || 'spc-none');
+
+    let text = spcData.label;
+    if (spcData.expire) {
+        const m = spcData.expire.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+        if (m) {
+            const exp = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+            text += ' · through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+                ' ' + exp.toLocaleDateString([], { weekday: 'short' });
+        }
+    }
+    lane.querySelector('.lane-status').textContent = text;
+}
+
+function _deriveBlueLaneState(nowSummary) {
+    if (!nowSummary) return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
+
+    const ls = nowSummary.lightningState;
+    const ps = nowSummary.precipStateNow;
+    const trend = nowSummary.precipTrend60m;
+    const isWet = ps && ps.phenomenon !== 'dry';
+    const hasTrend = trend && trend.summary;
+
+    // Lightning active within 5mi
+    if (ls && ls.state === 'active' && ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
+        const d = Math.max(1, Math.round(ls.nearestStrikeMi));
+        return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: `Within ${d} mi` };
+    }
+    // Lightning active or nearby (>5mi)
+    if (ls && (ls.state === 'active' || ls.state === 'nearby')) {
+        const sec = hasTrend ? trend.summary : '';
+        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: sec };
+    }
+    // Lightning approaching
+    if (ls && ls.state === 'approaching') {
+        if (ls._isApproaching) {
+            const sec = hasTrend ? trend.summary : '';
+            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: sec };
+        }
+        return { cls: 'storm-nearby', status: 'Distant lightning', secondary: '' };
+    }
+    // METAR fallback thunderstorm
+    if (ls && ls.source === 'metar-fallback') {
+        return { cls: 'storm-nearby', status: 'Thunder reported nearby', secondary: '' };
+    }
+    // Rain with no lightning
+    if (isWet) {
+        const sec = hasTrend ? trend.summary : '';
+        return { cls: 'storm-rain', status: 'Rain nearby', secondary: sec };
+    }
+    // Trend predicts rain soon but not wet yet
+    if (hasTrend) {
+        return { cls: 'storm-rain', status: 'Rain expected', secondary: trend.summary };
+    }
+    return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
+}
+
+function updateBlueLane(nowSummary) {
+    const lane = document.getElementById('hazard-blue');
+    if (!lane) return;
+
+    const state = _deriveBlueLaneState(nowSummary);
+    lane.className = 'hazard-lane lane-blue ' + state.cls;
+    lane.querySelector('.lane-status').textContent = state.status;
+    const secEl = lane.querySelector('.lane-secondary');
+    if (secEl) secEl.textContent = state.secondary;
+}
+
+// ─── Hazard lane suppression ─────────────────────────────────────────────────
+const _CONVECTIVE_EVENTS = ['Tornado', 'Severe Thunderstorm'];
+
+function _shouldSuppressForecastRisk() {
+    // Suppress if a convective NWS watch/warning covers the same hazard
+    const allAlerts = [...(cachedAlerts?.active || []), ...(cachedAlerts?.upcoming || [])];
+    const hasConvectiveAlert = allAlerts.some(a => {
+        const e = a.properties.event || '';
+        return _CONVECTIVE_EVENTS.some(c => e.includes(c)) &&
+               (e.includes('Warning') || e.includes('Watch'));
+    });
+    if (hasConvectiveAlert) return true;
+
+    // Suppress if blue lane shows active storm state (storms already here)
+    const blue = document.getElementById('hazard-blue');
+    if (blue && (blue.classList.contains('storm-lightning') ||
+                 blue.classList.contains('storm-nearby') ||
+                 blue.classList.contains('storm-approaching'))) {
+        return true;
+    }
+
+    return false;
+}
+
+function _applySuppression() {
+    const lane = document.getElementById('hazard-yellow');
+    if (!lane) return;
+    if (lane.classList.contains('spc-none')) return;
+    lane.style.display = _shouldSuppressForecastRisk() ? 'none' : '';
+}
+
+function updateNWSForecasts(nws, daily) {
+    if (!nws || !nws.forecast || !nws.forecast.properties || !nws.forecast.properties.periods) return;
+
+    const periods = nws.forecast.properties.periods;
+    const forecastItems = document.querySelectorAll('.forecast-item');
+    if (!forecastItems.length) return;
+
+    const _now = new Date();
+    const _todayStr = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
+    const startIdx = Math.max(0, daily.time.findIndex(d => d >= _todayStr));
+
+    forecastItems.forEach((item, i) => {
+        const di = startIdx + i;
+        if (di >= daily.time.length) return;
+
+        const date = daily.time[di];
+        const dateParts = date.split('-');
+        const year = parseInt(dateParts[0]);
+        const month = parseInt(dateParts[1]) - 1;
+        const day = parseInt(dateParts[2]);
+
+        const matchingPeriods = periods.filter(period => {
+            const ps = new Date(period.startTime);
+            return ps.getFullYear() === year && ps.getMonth() === month && ps.getDate() === day;
+        });
+
+        if (matchingPeriods.length > 0) {
+            const nwsHTML = `<div class="nws-inline">${matchingPeriods.map(p =>
+                `<div class="nws-inline-period"><span class="nws-inline-name">${p.name}:</span><span class="nws-inline-text">${p.detailedForecast}</span></div>`
+            ).join('')}</div>`;
+            item.insertAdjacentHTML('beforeend', nwsHTML);
+        } else {
+            item.insertAdjacentHTML('beforeend', `<div class="nws-inline"><div class="nws-inline-period nws-no-data">Extended forecast — NWS data unavailable</div></div>`);
+        }
+
+        // Update forecastDays for detail modal
+        if (forecastDays[i]) {
+            forecastDays[i].nwsPeriods = matchingPeriods;
+        }
+    });
+}
+
+function updateNWSToggle() {
+    const forecastCard = document.querySelector('.forecast-card');
+    if (!forecastCard || document.getElementById('nwsCheck')) return;
+
+    const cardHeader = forecastCard.querySelector('.card-header');
+    if (!cardHeader) return;
+
+    const label = document.createElement('label');
+    label.className = 'nws-toggle';
+    label.innerHTML = '<input type="checkbox" id="nwsCheck" onchange="toggleNWS(this.checked)"><span>NWS</span>';
+    cardHeader.appendChild(label);
+
+    const nwsDefault = nwsShowByDefault !== null ? nwsShowByDefault : window.innerWidth > 768;
+    forecastCard.classList.toggle('nws-visible', nwsDefault);
+    document.getElementById('nwsCheck').checked = nwsDefault;
+}
+
+function updateModelSpread(daily, modelComparison) {
+    if (!modelComparison || !modelComparison.daily) return;
+
+    const d = modelComparison.daily;
+    const maxKeys = Object.keys(d).filter(k => k.startsWith('temperature_2m_max_'));
+    const minKeys = Object.keys(d).filter(k => k.startsWith('temperature_2m_min_'));
+    if (maxKeys.length < 2 || minKeys.length < 2) return;
+
+    const modelLabels = {};
+    maxKeys.forEach(k => {
+        const suffix = k.replace('temperature_2m_max_', '');
+        if (suffix.includes('gfs')) modelLabels[suffix] = 'GFS';
+        else if (suffix.includes('ecmwf')) modelLabels[suffix] = 'ECMWF';
+        else modelLabels[suffix] = suffix.toUpperCase();
+    });
+
+    const THRESHOLD = 3;
+    const forecastItems = document.querySelectorAll('.forecast-item');
+    const days = d.time ? d.time.length : 0;
+
+    for (let j = 0; j < Math.min(days, forecastItems.length); j++) {
+        const highs = maxKeys.map(k => d[k][j]).filter(v => v != null);
+        const lows = minKeys.map(k => d[k][j]).filter(v => v != null);
+        if (highs.length < 2 || lows.length < 2) continue;
+
+        const highSpread = Math.abs(Math.max(...highs) - Math.min(...highs));
+        const lowSpread = Math.abs(Math.max(...lows) - Math.min(...lows));
+        if (highSpread <= THRESHOLD && lowSpread <= THRESHOLD) continue;
+
+        const tempRange = forecastItems[j].querySelector('.forecast-temp-range');
+        if (!tempRange) continue;
+
+        if (highSpread > THRESHOLD) {
+            const highEl = tempRange.querySelector('.temp-high');
+            if (highEl) highEl.textContent = `${Math.round(Math.min(...highs))}-${Math.round(Math.max(...highs))}°`;
+        }
+        if (lowSpread > THRESHOLD) {
+            const lowEl = tempRange.querySelector('.temp-low');
+            if (lowEl) lowEl.textContent = `${Math.round(Math.min(...lows))}-${Math.round(Math.max(...lows))}°`;
+        }
+
+        const models = maxKeys.map((k, mi) => {
+            const suffix = k.replace('temperature_2m_max_', '');
+            return { name: modelLabels[suffix], high: Math.round(d[k][j]), low: minKeys[mi] && d[minKeys[mi]][j] != null ? Math.round(d[minKeys[mi]][j]) : null };
+        }).filter(m => m.high != null && m.low != null);
+
+        const tooltipData = models.map(m => `${m.name}: ${m.high}\u00B0/${m.low}\u00B0`).join(' \u00B7 ');
+        tempRange.classList.add('has-model-spread');
+        tempRange.setAttribute('data-tooltip', tooltipData);
+        tempRange.onclick = (event) => showModelTooltip(event, tooltipData);
+
+        if (forecastDays[j]) {
+            if (highSpread > THRESHOLD) forecastDays[j].highDisplay = `${Math.round(Math.min(...highs))}-${Math.round(Math.max(...highs))}\u00B0`;
+            if (lowSpread > THRESHOLD) forecastDays[j].lowDisplay = `${Math.round(Math.min(...lows))}-${Math.round(Math.max(...lows))}\u00B0`;
+            forecastDays[j].hasSpread = true;
+            forecastDays[j].tooltipData = tooltipData;
+        }
+    }
+}
+
+function updateRecentPrecipTile(recentPrecip) {
+    if (!recentPrecip || !recentPrecip.fullSeries) return;
+
+    cachedRecentPrecip = recentPrecip;
+    const rpWindow = parseInt(localStorage.getItem('precipWindow')) || 12;
+    const rpSliced = sliceRecentPrecip(recentPrecip, rpWindow);
+    if (!rpSliced) return;
+
+    const precipHTML = renderPrecipSpark(rpSliced);
+    if (!precipHTML) return;
+
+    const weatherDetails = document.querySelector('.weather-details');
+    if (weatherDetails) weatherDetails.insertAdjacentHTML('beforeend', precipHTML);
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelComparison, recentPrecip, nowSummary) {
@@ -685,15 +1022,18 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
 
     const currentCardHTML = renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary);
     const derivedIcons = deriveDailyIcons(openMeteo.hourly, openMeteo.daily);
-    const forecastGridHTML = renderForecastGrid(openMeteo.daily, derivedIcons, nws, modelComparison, locLabel);
+    const derivedNightIcons = deriveNightlyIcons(openMeteo.hourly, openMeteo.daily);
+    const forecastGridHTML = renderForecastGrid(openMeteo.daily, derivedIcons, derivedNightIcons, nws, modelComparison, locLabel);
     const hourlyStripHTML = renderHourlyStrip(openMeteo.hourly, openMeteo.current, locLabel);
 
     const satelliteHTML = `<div class="card satellite-card"><!-- Radar section rendered by renderRadarSection() --></div>`;
-    const timestampHTML = `<div class="timestamp">Location: ${location.name}, ${location.country} | <span style="opacity: 0.6;">v${APP_VERSION}</span> | <a href="about.html" target="_blank" rel="noopener" class="timestamp-about-link">About</a></div>`;
+    const timestampHTML = `<div class="timestamp">Location: ${location.name}, ${location.country} | <span class="version-link" onclick="openChangelog()">v${APP_VERSION}</span> | <a href="about.html" target="_blank" rel="noopener" class="timestamp-about-link">About</a></div>`;
 
     // Build section order (mobile-customizable)
     const sectionMap = { hourly: hourlyStripHTML, forecast: forecastGridHTML, satellite: satelliteHTML };
-    const orderedSections = sectionOrder.map(key => sectionMap[key] || '').join('\n');
+    const orderedSections = sectionOrder
+        .filter(key => sectionVisibility[key] !== false)
+        .map(key => sectionMap[key] || '').join('\n');
 
     container.innerHTML = `
         <div class="grid">
@@ -703,17 +1043,19 @@ function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelCompa
         </div>
     `;
 
-    renderRadarSection(location);
+    lazyLoadRadar(location);
     cacheLocationTemp(location.name, openMeteo.current.temperature_2m, openMeteo.current.weather_code);
     updateRefreshTime();
 
-    // Apply NWS toggle default: on for desktop, off for mobile (unless user set it)
-    const nwsDefault = nwsShowByDefault !== null ? nwsShowByDefault : window.innerWidth > 768;
-    const forecastCard = document.querySelector('.forecast-card');
-    const nwsCheck = document.getElementById('nwsCheck');
-    if (forecastCard && nws) {
-        forecastCard.classList.toggle('nws-visible', nwsDefault);
-        if (nwsCheck) nwsCheck.checked = nwsDefault;
+    // Apply NWS toggle default if NWS data is already available (Tier 1 render may not have it)
+    if (nws) {
+        const nwsDefault = nwsShowByDefault !== null ? nwsShowByDefault : window.innerWidth > 768;
+        const forecastCard = document.querySelector('.forecast-card');
+        const nwsCheck = document.getElementById('nwsCheck');
+        if (forecastCard) {
+            forecastCard.classList.toggle('nws-visible', nwsDefault);
+            if (nwsCheck) nwsCheck.checked = nwsDefault;
+        }
     }
 
     fetchAllLocationTemps();
@@ -761,41 +1103,34 @@ function updateNowcastDisplay(nowSummary) {
 
     if (_displayDesc !== null) {
         if (condEl) condEl.textContent = _displayDesc;
-        if (iconEl) iconEl.textContent = _displayIcon;
+        if (iconEl) iconEl.innerHTML = weatherIconImg(_displayIcon, 'condition-icon');
     }
     if (subEl) {
         subEl.textContent = _subtitleText;
         subEl.classList.remove('stale');
     }
 
-    // Rain timing — find or create element; use confidence-aware summary prose
-    let rainEl = document.querySelector('.nowcast-rain-timing');
-    const iconWrap = document.querySelector('.weather-icon-wrap');
-    const summaryText = _trend && _trend.summary ? '\uD83C\uDF27\uFE0F ' + _trend.summary : null;
-    if (summaryText) {
-        if (!rainEl && iconWrap) {
-            rainEl = document.createElement('div');
-            rainEl.className = 'nowcast-rain-timing';
-            iconWrap.appendChild(rainEl);
+    // Update rationale text in-place
+    const ratEl = document.querySelector('.nowcast-rationale');
+    if (ratEl) {
+        let rat = '';
+        if (_isWet) {
+            const ps = nowSummary.precipStateNow;
+            const dbzNote = (ps.source === 'NEXRAD' || ps.source === 'RainViewer')
+                ? ` (${Math.round(ps.confidence * 100)}% confidence)` : '';
+            rat = `${ps.source} detecting ${ps.desc.toLowerCase()}${dbzNote}.`;
+        } else if (_sky) {
+            rat = `${_sky.source} observing ${_sky.desc.toLowerCase()}.`;
         }
-        if (rainEl) { rainEl.textContent = summaryText; rainEl.style.display = ''; }
-    } else if (rainEl) {
-        rainEl.style.display = 'none';
+        if (rat && _displayDesc !== _sky?.desc && _displayDesc !== nowSummary.precipStateNow?.desc && _ls2) {
+            rat += ` Lightning ${_ls2.state} (${_ls2.source}) promoted to ${_displayDesc}.`;
+        }
+        if (rat) ratEl.textContent = rat;
     }
 
-    // Lightning line — find or create element
-    let thunderEl = document.querySelector('.nowcast-thunder-line');
-    const _lsText = _lightningLineText(nowSummary.lightningState);
-    if (_lsText) {
-        if (!thunderEl && iconWrap) {
-            thunderEl = document.createElement('div');
-            thunderEl.className = 'nowcast-thunder-line';
-            iconWrap.appendChild(thunderEl);
-        }
-        if (thunderEl) { thunderEl.textContent = _lsText; thunderEl.style.display = ''; }
-    } else if (thunderEl) {
-        thunderEl.style.display = 'none';
-    }
+    // Update blue hazard lane with lightning/rain/nowcast state
+    updateBlueLane(nowSummary);
+    _applySuppression();
 }
 
 // ─── Condition Detail Modal ───────────────────────────────────────────────────
@@ -828,7 +1163,7 @@ function openConditionDetail() {
         // Parsed condition
         const cond = parseMetarCondition(obs.presentWeather, obs.textDescription);
         if (cond.desc !== 'Unknown') {
-            html += `<div class="obs-cond-label">${cond.icon} ${cond.desc}</div>`;
+            html += `<div class="obs-cond-label">${weatherIconImg(cond.icon, 'obs-icon-img')} ${cond.desc}</div>`;
         }
 
         // Data grid

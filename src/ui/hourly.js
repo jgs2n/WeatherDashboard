@@ -32,16 +32,17 @@ function toggleHourlyDetail(index) {
     const cur = isNow ? cachedCurrentData : null;
 
     const time = new Date(hourly.time[index]);
-    const code = isNow
-        ? (WEATHER_CODES[cachedCurrentData.weather_code] || WEATHER_CODES[0])
-        : (WEATHER_CODES[hourly.weather_code[index]] || WEATHER_CODES[0]);
+    const wmoCode = isNow ? cachedCurrentData.weather_code : hourly.weather_code[index];
+    const code = WEATHER_CODES[wmoCode] || WEATHER_CODES[0];
+    const isDay = hourly.is_day ? hourly.is_day[index] === 1 : true;
+    const iconName = getWeatherIcon(wmoCode, isDay);
     const timeStr = isNow
         ? 'Now'
         : time.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
     panel.innerHTML = `
         <div class="hourly-detail-header">
-            <div class="hourly-detail-title">${code.icon} ${timeStr} — ${code.desc}</div>
+            <div class="hourly-detail-title">${weatherIconImg(iconName, 'hourly-detail-icon')} ${timeStr} — ${code.desc}</div>
             <button class="hourly-detail-close" onclick="toggleHourlyDetail(${index})">×</button>
         </div>
         <div class="hourly-detail-grid">

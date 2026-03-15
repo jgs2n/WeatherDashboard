@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <!--
     Weather Command Center
-    Version: 0.7.0
-    Last Updated: 2026-02-23
+    Version: 0.8.0
+    Last Updated: 2026-03-15
 -->
 <html lang="en">
 <head>
@@ -20,7 +20,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌤️</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
-    <link rel="stylesheet" href="css/styles.css?v=1.4.0">
+    <link rel="stylesheet" href="css/styles.css?v=1.20.0">
     <link rel="manifest" href="pwa/manifest.json">
     <link rel="apple-touch-icon" href="pwa/icon.svg">
 </head>
@@ -49,10 +49,21 @@
     <div class="alert-modal-overlay" id="alertModal" onclick="if(event.target===this)closeAlertModal()">
         <div class="alert-modal">
             <div class="alert-modal-header">
-                <h2>⚠️ Weather Alerts</h2>
+                <h2 id="alertModalTitle">⚠️ Weather Alerts</h2>
                 <button class="alert-modal-close" onclick="closeAlertModal()">✕</button>
             </div>
             <div class="alert-modal-body" id="alertModalBody"></div>
+        </div>
+    </div>
+
+    <!-- Changelog Modal -->
+    <div class="alert-modal-overlay" id="changelogModal" onclick="if(event.target===this)closeChangelog()">
+        <div class="alert-modal changelog-modal">
+            <div class="alert-modal-header changelog-header">
+                <h2 id="changelogModalTitle">What's New</h2>
+                <button class="alert-modal-close" onclick="closeChangelog()">✕</button>
+            </div>
+            <div class="alert-modal-body" id="changelogModalBody"></div>
         </div>
     </div>
 
@@ -113,10 +124,10 @@
         </div>
     </div>
 
-    <script src="src/state/store.js?v=1.9.0"></script>
+    <script src="src/state/store.js?v=1.13.0"></script>
     <script src="src/utils/weatherCodes.js"></script>
     <script src="src/utils/risk.js?v=1.2.7"></script>
-    <script src="src/utils/dailyIcon.js"></script>
+    <script src="src/utils/dailyIcon.js?v=1.1.0"></script>
     <script src="src/utils/dom.js?v=0.6.0"></script>
     <script src="src/utils/moon.js"></script>
     <script src="src/utils/metarParse.js"></script>
@@ -124,20 +135,22 @@
     <script src="src/services/geocode.js?v=1.9.3"></script>
     <script src="src/services/openMeteo.js"></script>
     <script src="src/services/nws.js"></script>
+    <script src="src/services/spc.js"></script>
     <script src="src/services/recentPrecip.js?v=1.8.1"></script>
     <script src="src/services/observations.js?v=1.8.1"></script>
     <script src="src/services/radarSampler.js"></script>
     <script src="src/services/lightning.js"></script>
     <script src="src/services/nowcast.js"></script>
+    <script src="src/services/geolocation.js"></script>
     <script src="src/ui/locationPicker.js?v=1.9.3"></script>
     <script src="src/ui/pressureChart.js"></script>
     <script src="src/ui/aqiChart.js?v=1.0.5"></script>
     <script src="src/ui/precipChart.js"></script>
-    <script src="src/ui/forecastModal.js"></script>
+    <script src="src/ui/forecastModal.js?v=1.1.0"></script>
     <script src="src/ui/hourly.js"></script>
     <script src="src/ui/share.js"></script>
-    <script src="src/ui/renderDashboard.js?v=1.9.0"></script>
+    <script src="src/ui/renderDashboard.js?v=1.13.0"></script>
     <script src="src/ui/tabDrag.js?v=1.1.7"></script>
-    <script src="src/main.js?v=1.9.0"></script>
+    <script src="src/main.js?v=1.13.0"></script>
 </body>
 </html>

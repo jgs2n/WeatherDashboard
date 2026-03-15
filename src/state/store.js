@@ -4,7 +4,48 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.0';
+
+const CHANGELOG = [
+    {
+        version: '0.8.0',
+        date: '2026-03-15',
+        features: [
+            {
+                title: 'Hazard Lane Alert System',
+                desc: 'Three-lane hazard panel replacing simple alert banners. Red lane for NWS alerts with severity tiers (advisory through critical with flashing animation). Yellow lane for SPC convective outlooks. Blue lane for near-term storm status from nowcast and lightning.'
+            },
+            {
+                title: '"My Location" GPS Tracking',
+                desc: 'Continuous GPS watch with 1 km movement threshold and auto-refresh. Toggle via the crosshair button in the header. Pauses when the tab is hidden to save battery.'
+            },
+            {
+                title: 'SVG Weather Icons',
+                desc: 'Full migration from emoji to Meteocons SVG icons with day/night variants. Improved sleet and rain/snow mix detection using hourly codes and daily accumulation totals.'
+            },
+            {
+                title: 'SPC Convective Outlook',
+                desc: 'Storm Prediction Center Day 1 categorical outlook integration. Point-in-polygon matching shows your local severe weather risk level (Marginal through High).'
+            },
+            {
+                title: 'Faster Loading',
+                desc: 'Tiered data loading renders the main dashboard in under a second while supplementary data fills in progressively. All secondary API calls run in parallel. Radar maps lazy-load after initial paint. Nowcast polling adapts to conditions. SVG icons use native lazy loading.'
+            },
+            {
+                title: 'Section Visibility & Order',
+                desc: 'Show or hide dashboard sections from Settings. Default order changed to hourly-first for quicker at-a-glance reads.'
+            },
+            {
+                title: 'Night Forecast Icons',
+                desc: 'The 7-day forecast now shows a night icon alongside the day icon when overnight conditions differ meaningfully — storms, rain, snow, or fog that the daytime icon alone wouldn\'t convey. Matching conditions are deduplicated to keep the display clean.'
+            },
+            {
+                title: 'Icon Rationale',
+                desc: 'Tap the current conditions icon to see why it was chosen — shows the data source, confidence level, and any lightning promotion logic.'
+            }
+        ]
+    }
+];
 
 // Location state
 let savedLocations = [];
@@ -13,6 +54,11 @@ const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 
 let lastRefreshTime = null;
 let locationTemps = {}; // keyed by location name
 let nwsShowByDefault = null;
+
+// Geo "Me" mode state
+let geoMeActive = false;
+let lastGeoPosition = null;       // { lat, lon, name, displayName, country }
+let _previousActiveLocation = null;
 
 // Forecast modal state
 let forecastDays = []; // raw data for forecast detail modal
@@ -46,8 +92,13 @@ let activeTooltip = null;
 
 // Section order (mobile layout customization)
 const SECTION_ORDER_KEY = 'sectionOrder';
-const DEFAULT_SECTION_ORDER = ['forecast', 'hourly', 'satellite'];
+const DEFAULT_SECTION_ORDER = ['hourly', 'forecast', 'satellite'];
 let sectionOrder = [...DEFAULT_SECTION_ORDER];
+
+// Section visibility (show/hide individual sections)
+const SECTION_VISIBILITY_KEY = 'sectionVisibility';
+const DEFAULT_SECTION_VISIBILITY = { hourly: true, forecast: true, satellite: true };
+let sectionVisibility = { ...DEFAULT_SECTION_VISIBILITY };
 
 // Nowcast state
 let cachedNowSummary = null;
@@ -68,8 +119,9 @@ function loadSavedLocations() {
         // Start with empty locations for new users
         savedLocations = [];
     }
-    // Load section order
+    // Load section order + visibility
     loadSectionOrder();
+    loadSectionVisibility();
 
     const storedNWS = localStorage.getItem('nwsShowByDefault');
     nwsShowByDefault = storedNWS !== null ? storedNWS === 'true' : null;
@@ -81,6 +133,21 @@ function loadSavedLocations() {
         activeLocation = savedLocations[0];
     } else {
         activeLocation = null;
+    }
+
+    // Load Geo "Me" mode state
+    geoMeActive = localStorage.getItem('geoMeActive') === 'true';
+    const storedGeoPos = localStorage.getItem('lastGeoPosition');
+    if (storedGeoPos) {
+        try { lastGeoPosition = JSON.parse(storedGeoPos); } catch (e) { lastGeoPosition = null; }
+    }
+}
+
+// Save Geo "Me" state to localStorage
+function saveGeoMeState() {
+    localStorage.setItem('geoMeActive', geoMeActive ? 'true' : 'false');
+    if (lastGeoPosition) {
+        localStorage.setItem('lastGeoPosition', JSON.stringify(lastGeoPosition));
     }
 }
 
@@ -129,6 +196,27 @@ function loadSectionOrder() {
 function saveSectionOrder(order) {
     sectionOrder = order;
     localStorage.setItem(SECTION_ORDER_KEY, JSON.stringify(order));
+}
+
+// Load section visibility from localStorage
+function loadSectionVisibility() {
+    try {
+        const stored = localStorage.getItem(SECTION_VISIBILITY_KEY);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (parsed && typeof parsed === 'object') {
+                sectionVisibility = { ...DEFAULT_SECTION_VISIBILITY, ...parsed };
+            }
+        }
+    } catch (e) {
+        console.warn('[Settings] Failed to load section visibility:', e.message);
+    }
+}
+
+// Save section visibility to localStorage
+function saveSectionVisibility(vis) {
+    sectionVisibility = vis;
+    localStorage.setItem(SECTION_VISIBILITY_KEY, JSON.stringify(vis));
 }
 
 // Save nowcast state to localStorage

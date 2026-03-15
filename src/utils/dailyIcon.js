@@ -41,13 +41,26 @@ function deriveDailyIcons(hourly, daily) {
         }
 
         const snowCount = codes.filter(c => SNOW_CODES.has(c)).length;
-        if (snowCount >= 2) {
-            // Pick moderate snow as representative
-            result.push(getWeatherInfo(73));
+        const rainCount = codes.filter(c => RAIN_CODES.has(c)).length;
+
+        // --- Sleet / rain+snow mix detection ---
+        // When both rain and snow have meaningful accumulation, show sleet icon
+        const dailyPrecip = daily.precipitation_sum ? daily.precipitation_sum[d] : 0;
+        const dailySnowfall = daily.snowfall_sum ? daily.snowfall_sum[d] : 0;
+        const dailySnowInches = dailySnowfall > 0 ? dailySnowfall / 2.54 : 0;
+
+        if (snowCount >= 1 && rainCount >= 1
+            && dailyPrecip >= PRECIP_THRESHOLD
+            && dailySnowInches >= PRECIP_THRESHOLD) {
+            result.push({ desc: 'Rain/Snow Mix', icon: 'sleet' });
             continue;
         }
 
-        const rainCount = codes.filter(c => RAIN_CODES.has(c)).length;
+        // Pure snow — only if snow codes dominate and rain accumulation is negligible
+        if (snowCount >= 2 && dailyPrecip < PRECIP_THRESHOLD) {
+            result.push(getWeatherInfo(73));
+            continue;
+        }
         const highProbHours = precipProbs.filter(p => p >= 50).length;
         // Rain codes alone aren't enough — require meaningful accumulation or high probability
         if ((rainCount >= 3 && totalPrecip >= PRECIP_THRESHOLD) || highProbHours >= 2 || totalPrecip >= PRECIP_THRESHOLD) {
@@ -100,6 +113,83 @@ function deriveDailyIcons(hourly, daily) {
             // Mixed — bias toward partly cloudy
             result.push(getWeatherInfo(2));
         }
+    }
+    return result;
+}
+
+// Derive nightly icons — only returns non-null for "notable" nights
+// (precip, storms, snow, fog). Clear/cloudy nights return null.
+function deriveNightlyIcons(hourly, daily) {
+    if (!hourly || !daily || !hourly.time || !daily.time) return [];
+
+    const result = [];
+    for (let d = 0; d < daily.time.length; d++) {
+        const dayDate = daily.time[d];
+
+        // Collect nighttime hourly indices for this day
+        const nightHours = [];
+        for (let h = 0; h < hourly.time.length; h++) {
+            if (hourly.time[h].startsWith(dayDate) && hourly.is_day && hourly.is_day[h] === 0) {
+                nightHours.push(h);
+            }
+        }
+
+        if (nightHours.length === 0) {
+            result.push(null);
+            continue;
+        }
+
+        const codes = nightHours.map(h => hourly.weather_code[h]);
+        const precips = nightHours.map(h => hourly.precipitation[h] || 0);
+        const precipProbs = nightHours.map(h => hourly.precipitation_probability[h] || 0);
+        const totalPrecip = precips.reduce((a, b) => a + b, 0);
+
+        // --- Precip overrides only — sky-state returns null ---
+        const thunderCount = codes.filter(c => THUNDER_CODES.has(c)).length;
+        if (thunderCount >= 2 || (thunderCount >= 1 && totalPrecip >= PRECIP_THRESHOLD)) {
+            result.push({ desc: 'Thunderstorm', icon: getWeatherIcon(95, false) });
+            continue;
+        }
+
+        const snowCount = codes.filter(c => SNOW_CODES.has(c)).length;
+        const rainCount = codes.filter(c => RAIN_CODES.has(c)).length;
+
+        const dailyPrecip = daily.precipitation_sum ? daily.precipitation_sum[d] : 0;
+        const dailySnowfall = daily.snowfall_sum ? daily.snowfall_sum[d] : 0;
+        const dailySnowInches = dailySnowfall > 0 ? dailySnowfall / 2.54 : 0;
+
+        if (snowCount >= 1 && rainCount >= 1
+            && dailyPrecip >= PRECIP_THRESHOLD
+            && dailySnowInches >= PRECIP_THRESHOLD) {
+            result.push({ desc: 'Rain/Snow Mix', icon: 'sleet' });
+            continue;
+        }
+
+        if (snowCount >= 2 && dailyPrecip < PRECIP_THRESHOLD) {
+            result.push({ desc: 'Snow', icon: getWeatherIcon(73, false) });
+            continue;
+        }
+
+        const highProbHours = precipProbs.filter(p => p >= 50).length;
+        if ((rainCount >= 3 && totalPrecip >= PRECIP_THRESHOLD) || highProbHours >= 2 || totalPrecip >= PRECIP_THRESHOLD) {
+            const rainCodes = codes.filter(c => RAIN_CODES.has(c));
+            const hasDrizzle = rainCodes.every(c => c >= 51 && c <= 57);
+            if (hasDrizzle && rainCodes.length > 0) {
+                result.push({ desc: 'Drizzle', icon: getWeatherIcon(51, false) });
+            } else {
+                result.push({ desc: 'Rain', icon: getWeatherIcon(61, false) });
+            }
+            continue;
+        }
+
+        const fogCount = codes.filter(c => FOG_CODES.has(c)).length;
+        if (fogCount >= 3) {
+            result.push({ desc: 'Fog', icon: getWeatherIcon(45, false) });
+            continue;
+        }
+
+        // Sky-state only (clear/partly cloudy/overcast) — not notable
+        result.push(null);
     }
     return result;
 }

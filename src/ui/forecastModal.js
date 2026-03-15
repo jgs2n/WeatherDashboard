@@ -44,8 +44,8 @@ function renderForecastDetailDay(index) {
             <span class="fd-date">${d.dateDisplay}</span>
         </div>
         <div class="fd-icon-row">
-            <span class="fd-icon">${d.icon}</span>
-            <span class="fd-condition">${d.desc}</span>
+            <span class="fd-icon">${weatherIconImg(d.icon, 'fd-icon-img')}${d.nightIcon ? `<span class="night-icon-pill fd-night-pill">${weatherIconImg(d.nightIcon, 'fd-night-icon')}</span>` : ''}</span>
+            <span class="fd-condition">${d.desc}${d.nightDesc ? ` / ${d.nightDesc} tonight` : ''}</span>
         </div>
         <div class="fd-temps${d.hasSpread ? ' has-model-spread' : ''}"${d.hasSpread ? ` onclick="showModelTooltip(event, '${d.tooltipData}')"` : ''}>
             <span class="fd-high">${d.highDisplay}</span>

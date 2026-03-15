@@ -8,7 +8,7 @@ function renderTabs() {
 
     const locationTabs = savedLocations.map((loc, index) => {
         return `
-        <div class="location-tab ${activeLocation && activeLocation.name === loc.name ? 'active' : ''}"
+        <div class="location-tab ${!geoMeActive && activeLocation && activeLocation.name === loc.name ? 'active' : ''}"
              ${!isTouchDevice ? 'draggable="true"' : ''}
              data-index="${index}"
              onclick="${`switchLocation(${index})`}"
@@ -18,7 +18,7 @@ function renderTabs() {
              ondragend="handleDragEnd(event)"` : ''}>
             <div class="location-tab-content">
                 <span>${loc.displayName}</span>
-                ${locationTemps[loc.name] ? `<span class="tab-temp">${(WEATHER_CODES[locationTemps[loc.name].code] || WEATHER_CODES[0]).icon} ${locationTemps[loc.name].temp}°F</span>` : ''}
+                ${locationTemps[loc.name] ? `<span class="tab-temp">${weatherIconImg((WEATHER_CODES[locationTemps[loc.name].code] || WEATHER_CODES[0]).icon, 'tab-icon-img')} ${locationTemps[loc.name].temp}°F</span>` : ''}
             </div>
             ${savedLocations.length > 1 ? `<button class="remove-btn" onclick="event.stopPropagation(); confirmRemove(this, ${index})" title="Remove location">×</button>` : ''}
         </div>
@@ -30,8 +30,22 @@ function renderTabs() {
         ? `<div class="header-btn edit-btn ${touchDragState.editMode ? 'edit-tab--active' : ''}" id="editTabBtn" onclick="toggleEditMode()">${touchDragState.editMode ? 'DONE' : '✏️ EDIT'}</div>`
         : '';
 
+    const geoMeButton = `
+        <div class="geo-me-toggle ${geoMeActive ? 'active' : ''}"
+             onclick="toggleGeoMe()"
+             title="${geoMeActive ? 'Stop tracking my location' : 'Track my location'}">
+            <svg class="geo-me-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <line x1="12" y1="2" x2="12" y2="6"/>
+                <line x1="12" y1="18" x2="12" y2="22"/>
+                <line x1="2" y1="12" x2="6" y2="12"/>
+                <line x1="18" y1="12" x2="22" y2="12"/>
+            </svg>
+        </div>
+    `;
+
     document.getElementById('headerActions').innerHTML = addButton + editButton;
-    tabsContainer.innerHTML = `<div class="location-tabs-inner">${locationTabs}</div>`;
+    tabsContainer.innerHTML = `<div class="location-tabs-inner">${locationTabs}${geoMeButton}</div>`;
 
     // Re-attach long-press listeners on touch devices
     if (isTouchDevice) {
@@ -165,6 +179,14 @@ function switchLocation(index) {
         return;
     }
     if (touchDragState.editMode) exitEditMode();
+    // Deactivate "Me" mode if active
+    if (geoMeActive) {
+        geoMeActive = false;
+        stopGeoWatch();
+        _removeGeoVisibilityListener();
+        saveGeoMeState();
+        _previousActiveLocation = null;
+    }
     // Stop nowcast polling + lightning WS for old location + reset radar state
     stopNowcastPolling();
     if (typeof stopLightning === 'function') stopLightning();
@@ -207,27 +229,137 @@ function removeLocation(index) {
     renderTabs();
 }
 
+// ─── Geo "Me" mode ──────────────────────────────────────────────────────────
+
+let _geoVisibilityHandler = null;
+
+function toggleGeoMe() {
+    if (geoMeActive) {
+        // Deactivate
+        geoMeActive = false;
+        stopGeoWatch();
+        _removeGeoVisibilityListener();
+        saveGeoMeState();
+
+        // Return to previous saved location
+        if (_previousActiveLocation) {
+            activeLocation = _previousActiveLocation;
+        } else if (savedLocations.length > 0) {
+            activeLocation = savedLocations[0];
+        }
+        _previousActiveLocation = null;
+        saveLocations();
+        renderTabs();
+
+        if (activeLocation && activeLocation.lat && activeLocation.lon) {
+            stopNowcastPolling();
+            if (typeof stopLightning === 'function') stopLightning();
+            if (typeof resetRadarState === 'function') resetRadarState();
+            fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
+        }
+    } else {
+        // Activate
+        if (!navigator.geolocation) {
+            alert('Geolocation is not supported by this browser.');
+            return;
+        }
+
+        _previousActiveLocation = activeLocation;
+        geoMeActive = true;
+        saveGeoMeState();
+
+        stopNowcastPolling();
+        if (typeof stopLightning === 'function') stopLightning();
+        if (typeof resetRadarState === 'function') resetRadarState();
+
+        if (lastGeoPosition) {
+            activeLocation = lastGeoPosition;
+            renderTabs();
+            fetchWeatherDataDirect(lastGeoPosition.lat, lastGeoPosition.lon, lastGeoPosition);
+        } else {
+            renderTabs();
+        }
+
+        _startGeoMeWatch();
+        _addGeoVisibilityListener();
+    }
+}
+
+function _startGeoMeWatch() {
+    startGeoWatch(
+        async (pos) => {
+            const rev = await reverseGeocodeLocation(pos.lat, pos.lon);
+            const geoLoc = {
+                lat: pos.lat,
+                lon: pos.lon,
+                name: rev ? rev.name : 'My Location',
+                displayName: rev ? extractDisplayName(rev.name) : 'My Location',
+                country: rev ? rev.country : null
+            };
+
+            lastGeoPosition = geoLoc;
+            activeLocation = geoLoc;
+            saveGeoMeState();
+            renderTabs();
+
+            stopNowcastPolling();
+            if (typeof stopLightning === 'function') stopLightning();
+            if (typeof resetRadarState === 'function') resetRadarState();
+            fetchWeatherDataDirect(geoLoc.lat, geoLoc.lon, geoLoc);
+        },
+        (err) => {
+            console.warn('[GeoMe] Position error:', err.message);
+            if (!lastGeoPosition) {
+                const container = document.getElementById('weatherContainer');
+                container.innerHTML = `<div class="card"><div class="alert-title">Location Error</div><p>Unable to determine your location. Check browser location permissions.</p></div>`;
+            }
+        }
+    );
+}
+
+function _addGeoVisibilityListener() {
+    _removeGeoVisibilityListener();
+    _geoVisibilityHandler = () => {
+        if (document.hidden) {
+            stopGeoWatch();
+        } else if (geoMeActive) {
+            _startGeoMeWatch();
+        }
+    };
+    document.addEventListener('visibilitychange', _geoVisibilityHandler);
+}
+
+function _removeGeoVisibilityListener() {
+    if (_geoVisibilityHandler) {
+        document.removeEventListener('visibilitychange', _geoVisibilityHandler);
+        _geoVisibilityHandler = null;
+    }
+}
+
 // Alert modal management
 function openAlertModal() {
     const modal = document.getElementById('alertModal');
     const body = document.getElementById('alertModalBody');
+    const title = document.getElementById('alertModalTitle');
+    const totalAlerts = cachedAlerts.active.length + cachedAlerts.upcoming.length;
+    title.textContent = totalAlerts <= 1 ? '\u26A0\uFE0F NWS Weather Alert' : `\u26A0\uFE0F ${totalAlerts} NWS Weather Alerts`;
 
     let html = '';
 
     if (cachedAlerts.active.length > 0) {
-        html += '<div class="modal-section-label">🔴 Active</div>';
+        html += '<div class="modal-section-label">\uD83D\uDD34 Active</div>';
         html += cachedAlerts.active.map(a => `
             <div class="modal-alert-item">
                 <div class="modal-alert-event">${escapeHTML(a.properties.event)}</div>
                 <div class="modal-alert-headline">${escapeHTML(a.properties.headline)}</div>
                 <div class="modal-alert-description">${escapeHTML(a.properties.description || 'No additional details.')}</div>
-                ${a.properties.instruction ? `<div class="modal-alert-instruction">⚠️ ${escapeHTML(a.properties.instruction)}</div>` : ''}
+                ${a.properties.instruction ? `<div class="modal-alert-instruction">\u26A0\uFE0F ${escapeHTML(a.properties.instruction)}</div>` : ''}
             </div>
         `).join('');
     }
 
     if (cachedAlerts.upcoming.length > 0) {
-        html += '<div class="modal-section-label">🟡 Upcoming</div>';
+        html += '<div class="modal-section-label">\uD83D\uDFE1 Upcoming</div>';
         html += cachedAlerts.upcoming.map(a => {
             const onset = new Date(a.properties.onset);
             const onsetStr = onset.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -237,7 +369,7 @@ function openAlertModal() {
                     <div class="modal-alert-headline">${escapeHTML(a.properties.headline)}</div>
                     <div class="modal-alert-onset">Starts: ${onsetStr}</div>
                     <div class="modal-alert-description">${escapeHTML(a.properties.description || 'No additional details.')}</div>
-                    ${a.properties.instruction ? `<div class="modal-alert-instruction">⚠️ ${escapeHTML(a.properties.instruction)}</div>` : ''}
+                    ${a.properties.instruction ? `<div class="modal-alert-instruction">\u26A0\uFE0F ${escapeHTML(a.properties.instruction)}</div>` : ''}
                 </div>
             `;
         }).join('');
@@ -248,8 +380,74 @@ function openAlertModal() {
     document.body.style.overflow = 'hidden';
 }
 
+function openForecastRiskModal() {
+    if (!cachedSPCOutlook) return;
+    const modal = document.getElementById('alertModal');
+    const body = document.getElementById('alertModalBody');
+    const title = document.getElementById('alertModalTitle');
+    title.textContent = '\u26A1 Storm Risk';
+
+    const spc = cachedSPCOutlook;
+    const descriptions = {
+        MRGL: 'Isolated severe thunderstorms possible. Limited in duration, coverage, or intensity.',
+        SLGT: 'Scattered severe storms possible. Some could produce damaging winds, large hail, or tornadoes.',
+        ENH:  'Numerous severe storms likely. Significant severe weather is expected with multiple hazards.',
+        MDT:  'Widespread severe storms expected. Long-lived and intense storms with significant severe weather.',
+        HIGH: 'Major severe weather outbreak expected. Widespread, long-track tornadoes and destructive storms.'
+    };
+    const spcColors = { MRGL: '#c8c850', SLGT: '#e6d232', ENH: '#ffc800', MDT: '#ffaa00', HIGH: '#ff00ff' };
+
+    let validStr = '';
+    if (spc.valid && spc.expire) {
+        const mv = spc.valid.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+        const me = spc.expire.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+        if (mv && me) {
+            const vd = new Date(Date.UTC(+mv[1], +mv[2] - 1, +mv[3], +mv[4], +mv[5]));
+            const ed = new Date(Date.UTC(+me[1], +me[2] - 1, +me[3], +me[4], +me[5]));
+            const fmt = { hour: 'numeric', minute: '2-digit', weekday: 'short', month: 'short', day: 'numeric' };
+            validStr = `<div class="modal-alert-onset">Valid: ${vd.toLocaleString('en-US', fmt)} \u2013 ${ed.toLocaleString('en-US', fmt)}</div>`;
+        }
+    }
+
+    body.innerHTML = `
+        <div class="modal-alert-item outlook">
+            <div class="modal-alert-event" style="color: ${spcColors[spc.category] || '#ffd54f'}">${escapeHTML(spc.label)}</div>
+            ${validStr}
+            <div class="modal-alert-description">${descriptions[spc.category] || ''}</div>
+        </div>
+    `;
+    modal.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}
+
 function closeAlertModal() {
     document.getElementById('alertModal').classList.remove('visible');
+    document.body.style.overflow = '';
+}
+
+// Changelog modal management
+function openChangelog() {
+    const modal = document.getElementById('changelogModal');
+    const body = document.getElementById('changelogModalBody');
+
+    let html = '';
+    for (const release of CHANGELOG) {
+        html += `<div class="changelog-version-badge">v${release.version} <span class="changelog-date">${release.date}</span></div>`;
+        html += release.features.map(f => `
+            <div class="changelog-feature">
+                <div class="changelog-feature-title">${escapeHTML(f.title)}</div>
+                <div class="changelog-feature-desc">${escapeHTML(f.desc)}</div>
+            </div>
+        `).join('');
+    }
+
+    body.innerHTML = html;
+    modal.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeChangelog() {
+    document.getElementById('changelogModal').classList.remove('visible');
     document.body.style.overflow = '';
 }
 
@@ -292,6 +490,10 @@ function renderSettingsBody(body) {
                             <button class="settings-arrow-btn" ${i === order.length - 1 ? 'disabled' : ''} onclick="moveSection('${key}', 1)">▼</button>
                         </div>
                         <span class="settings-reorder-label">${SECTION_LABELS[key]}</span>
+                        <label class="settings-visibility-toggle" title="Show or hide this section">
+                            <input type="checkbox" ${sectionVisibility[key] !== false ? 'checked' : ''} onchange="toggleSectionVisibility('${key}', this.checked)">
+                            <span class="settings-visibility-slider"></span>
+                        </label>
                     </div>
                 `).join('')}
             </div>
@@ -314,8 +516,17 @@ function moveSection(key, direction) {
     }
 }
 
+function toggleSectionVisibility(key, visible) {
+    const vis = { ...sectionVisibility, [key]: visible };
+    saveSectionVisibility(vis);
+    if (activeLocation && document.querySelector('.grid')) {
+        reRenderDashboardOrder();
+    }
+}
+
 function resetSectionOrder() {
     saveSectionOrder([...DEFAULT_SECTION_ORDER]);
+    saveSectionVisibility({ ...DEFAULT_SECTION_VISIBILITY });
     renderSettingsBody(document.getElementById('settingsBody'));
     if (activeLocation && document.querySelector('.grid')) {
         reRenderDashboardOrder();
@@ -337,7 +548,10 @@ function reRenderDashboardOrder() {
     const fragment = document.createDocumentFragment();
     fragment.appendChild(currentCard);
     for (const key of sectionOrder) {
-        if (sections[key]) fragment.appendChild(sections[key]);
+        if (sections[key]) {
+            sections[key].style.display = sectionVisibility[key] === false ? 'none' : '';
+            fragment.appendChild(sections[key]);
+        }
     }
     if (timestamp) fragment.appendChild(timestamp);
     grid.innerHTML = '';
@@ -357,6 +571,8 @@ document.addEventListener('keydown', e => {
             closeForecastDetail();
         } else if (document.getElementById('obsDetailOverlay') && document.getElementById('obsDetailOverlay').classList.contains('visible')) {
             closeConditionDetail();
+        } else if (document.getElementById('changelogModal').classList.contains('visible')) {
+            closeChangelog();
         } else if (document.getElementById('settingsOverlay').classList.contains('visible')) {
             closeSettings();
         } else {
@@ -405,6 +621,23 @@ function dismissModelTooltip() {
 // Dismiss tooltip on any outside tap
 document.addEventListener('click', dismissModelTooltip);
 
+// Fill in Tier 2 data via targeted DOM patches (no full re-render)
+function fillTier2Data(openMeteo, airQuality, nws, location, modelComparison, recentPrecip, nowSummary, spcData) {
+    if (airQuality) updateAQITile(airQuality);
+    // Hazard lanes
+    updateRedLane(nws);
+    updateYellowLane(spcData);
+    if (nowSummary) updateBlueLane(nowSummary);
+    _applySuppression();
+    if (nws) {
+        if (nws.forecast) updateNWSForecasts(nws, openMeteo.daily);
+        updateNWSToggle();
+    }
+    if (modelComparison) updateModelSpread(openMeteo.daily, modelComparison);
+    if (recentPrecip) updateRecentPrecipTile(recentPrecip);
+    if (nowSummary) updateNowcastDisplay(nowSummary);
+}
+
 async function fetchWeatherData() {
     const container = document.getElementById('weatherContainer');
     const previousContent = container.innerHTML;
@@ -422,22 +655,32 @@ async function fetchWeatherData() {
             ? await showLocationPicker(geocodeResult)
             : geocodeResult;
 
-        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs] = await Promise.all([
-            fetchForecast(location.lat, location.lon),
+        // Fire ALL fetches simultaneously
+        const tier1Promise = fetchForecast(location.lat, location.lon);
+        const tier2Promise = Promise.all([
             fetchAirQuality(location.lat, location.lon),
             fetchNWS(location.lat, location.lon),
             fetchModelComparison(location.lat, location.lon),
             fetchRecentPrecip(location.lat, location.lon),
             getNowSummary({ lat: location.lat, lon: location.lon, country: location.country }),
             fetchObservationHistory(location.lat, location.lon),
-            fetchStationObservation(location.lat, location.lon)
+            fetchStationObservation(location.lat, location.lon),
+            fetchSPCOutlook(location.lat, location.lon)
         ]);
+
+        // Render as soon as Tier 1 resolves (~500ms)
+        const openMeteoData = await tier1Promise;
+        renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
+
+        // Fill in Tier 2 when ready
+        const [airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs, spcData] = await tier2Promise;
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
         cachedStationObs = stationObs;
         cachedNowSummary = nowSummary;
         saveNowcastState(nowSummary, location.lat, location.lon);
-        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
+
+        fillTier2Data(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary, spcData);
 
         // Start nowcast polling + lightning WebSocket
         startNowcastPolling(location.lat, location.lon, location.country);
@@ -468,22 +711,32 @@ async function fetchWeatherDataDirect(lat, lon, location) {
     container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading weather data...</div>';
 
     try {
-        const [openMeteoData, airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs] = await Promise.all([
-            fetchForecast(lat, lon),
+        // Fire ALL fetches simultaneously
+        const tier1Promise = fetchForecast(lat, lon);
+        const tier2Promise = Promise.all([
             fetchAirQuality(lat, lon),
             fetchNWS(lat, lon),
             fetchModelComparison(lat, lon),
             fetchRecentPrecip(lat, lon),
             getNowSummary({ lat, lon, country: location.country }),
             fetchObservationHistory(lat, lon),
-            fetchStationObservation(lat, lon)
+            fetchStationObservation(lat, lon),
+            fetchSPCOutlook(lat, lon)
         ]);
+
+        // Render as soon as Tier 1 resolves (~500ms)
+        const openMeteoData = await tier1Promise;
+        renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
+
+        // Fill in Tier 2 when ready (often already resolved by now)
+        const [airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs, spcData] = await tier2Promise;
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
         cachedStationObs = stationObs;
         cachedNowSummary = nowSummary;
         saveNowcastState(nowSummary, lat, lon);
-        renderWeatherDashboard(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary);
+
+        fillTier2Data(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary, spcData);
 
         // Start nowcast polling + lightning WebSocket
         startNowcastPolling(lat, lon, location.country);
@@ -509,7 +762,17 @@ function init() {
     loadNowcastState();
     renderTabs();
 
-    if (activeLocation) {
+    if (geoMeActive) {
+        // Restore "Me" mode from previous session
+        _previousActiveLocation = activeLocation;
+        if (lastGeoPosition) {
+            activeLocation = lastGeoPosition;
+            renderTabs();
+            fetchWeatherDataDirect(lastGeoPosition.lat, lastGeoPosition.lon, lastGeoPosition);
+        }
+        _startGeoMeWatch();
+        _addGeoVisibilityListener();
+    } else if (activeLocation) {
         // Use stored coordinates if available, otherwise search
         if (activeLocation.lat && activeLocation.lon) {
             fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);

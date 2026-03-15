@@ -8,54 +8,54 @@
 
 const _METAR_PATTERNS = [
     // Thunderstorm variants
-    { rx: /\+TS/,            desc: 'Heavy Thunderstorm',  icon: '⛈️', isThunder: true,  isRain: true,  isSnow: false },
-    { rx: /TSRA|TSSN|TSGS/,  desc: 'Thunderstorm',        icon: '⛈️', isThunder: true,  isRain: true,  isSnow: false },
-    { rx: /\bTS\b/,          desc: 'Thunderstorm',        icon: '⛈️', isThunder: true,  isRain: false, isSnow: false },
+    { rx: /\+TS/,            desc: 'Heavy Thunderstorm',  icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /TSRA|TSSN|TSGS/,  desc: 'Thunderstorm',        icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /\bTS\b/,          desc: 'Thunderstorm',        icon: 'thunderstorms-day-rain', isThunder: true,  isRain: false, isSnow: false },
     // Freezing precip
-    { rx: /FZRA/,            desc: 'Freezing Rain',       icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /FZDZ/,            desc: 'Freezing Drizzle',    icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
+    { rx: /FZRA/,            desc: 'Freezing Rain',       icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
+    { rx: /FZDZ/,            desc: 'Freezing Drizzle',    icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
     // Snow
-    { rx: /\+SN/,            desc: 'Heavy Snow',          icon: '❄️', isThunder: false, isRain: false, isSnow: true },
-    { rx: /\bSN\b/,          desc: 'Snow',                icon: '🌨️', isThunder: false, isRain: false, isSnow: true },
-    { rx: /-SN/,             desc: 'Light Snow',          icon: '🌨️', isThunder: false, isRain: false, isSnow: true },
-    { rx: /SG|IC|PE|PL|GS/,  desc: 'Wintry Mix',          icon: '🌨️', isThunder: false, isRain: true,  isSnow: true },
+    { rx: /\+SN/,            desc: 'Heavy Snow',          icon: 'snow',               isThunder: false, isRain: false, isSnow: true },
+    { rx: /\bSN\b/,          desc: 'Snow',                icon: 'snow',               isThunder: false, isRain: false, isSnow: true },
+    { rx: /-SN/,             desc: 'Light Snow',          icon: 'snow',               isThunder: false, isRain: false, isSnow: true },
+    { rx: /SG|IC|PE|PL|GS/,  desc: 'Wintry Mix',          icon: 'sleet',              isThunder: false, isRain: true,  isSnow: true },
     // Rain
-    { rx: /\+RA/,            desc: 'Heavy Rain',          icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /\bRA\b/,          desc: 'Rain',                icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /-RA/,             desc: 'Light Rain',          icon: '🌦️', isThunder: false, isRain: true,  isSnow: false },
+    { rx: /\+RA/,            desc: 'Heavy Rain',          icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
+    { rx: /\bRA\b/,          desc: 'Rain',                icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
+    { rx: /-RA/,             desc: 'Light Rain',          icon: 'drizzle',            isThunder: false, isRain: true,  isSnow: false },
     // Drizzle
-    { rx: /\bDZ\b|\+DZ|-DZ/, desc: 'Drizzle',             icon: '🌦️', isThunder: false, isRain: true,  isSnow: false },
+    { rx: /\bDZ\b|\+DZ|-DZ/, desc: 'Drizzle',             icon: 'drizzle',            isThunder: false, isRain: true,  isSnow: false },
     // Showers
-    { rx: /\+SH/,            desc: 'Heavy Showers',       icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /SHRA/,            desc: 'Rain Showers',        icon: '🌦️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /\bSH\b|-SH/,     desc: 'Light Showers',       icon: '🌦️', isThunder: false, isRain: true,  isSnow: false },
+    { rx: /\+SH/,            desc: 'Heavy Showers',       icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
+    { rx: /SHRA/,            desc: 'Rain Showers',        icon: 'drizzle',            isThunder: false, isRain: true,  isSnow: false },
+    { rx: /\bSH\b|-SH/,     desc: 'Light Showers',       icon: 'drizzle',            isThunder: false, isRain: true,  isSnow: false },
     // Fog / visibility
-    { rx: /FG/,              desc: 'Fog',                 icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /BR/,              desc: 'Mist',                icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /HZ/,              desc: 'Haze',                icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
+    { rx: /FG/,              desc: 'Fog',                 icon: 'fog-day',            isThunder: false, isRain: false, isSnow: false },
+    { rx: /BR/,              desc: 'Mist',                icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
+    { rx: /HZ/,              desc: 'Haze',                icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
     // Other
-    { rx: /FU|VA/,           desc: 'Smoke',               icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /DU|SA|SS|DS/,     desc: 'Dust/Sand',           icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
+    { rx: /FU|VA/,           desc: 'Smoke',               icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
+    { rx: /DU|SA|SS|DS/,     desc: 'Dust/Sand',           icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
 ];
 
 // ── NWS textDescription → condition fallback mapping ─────────────────────────
 const _TEXT_PATTERNS = [
-    { rx: /thunder/i,                    desc: 'Thunderstorm',    icon: '⛈️', isThunder: true,  isRain: true,  isSnow: false },
-    { rx: /freezing rain/i,              desc: 'Freezing Rain',   icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /heavy (rain|precip)/i,        desc: 'Heavy Rain',      icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /rain|showers/i,              desc: 'Rain',            icon: '🌧️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /light rain|drizzle/i,        desc: 'Light Rain',      icon: '🌦️', isThunder: false, isRain: true,  isSnow: false },
-    { rx: /heavy snow|blizzard/i,       desc: 'Heavy Snow',      icon: '❄️', isThunder: false, isRain: false, isSnow: true },
-    { rx: /snow|flurries/i,             desc: 'Snow',            icon: '🌨️', isThunder: false, isRain: false, isSnow: true },
-    { rx: /sleet|ice|wintry|freezing/i, desc: 'Wintry Mix',      icon: '🌨️', isThunder: false, isRain: true,  isSnow: true },
-    { rx: /fog/i,                       desc: 'Fog',             icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /mist|haze/i,                 desc: 'Mist',            icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /smoke/i,                     desc: 'Smoke',           icon: '🌫️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /overcast|cloudy/i,           desc: 'Overcast',        icon: '☁️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /mostly cloudy/i,             desc: 'Mostly Cloudy',   icon: '🌥️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /partly (cloudy|sunny)/i,     desc: 'Partly Cloudy',   icon: '⛅',  isThunder: false, isRain: false, isSnow: false },
-    { rx: /mostly (clear|sunny)/i,      desc: 'Mostly Clear',    icon: '🌤️', isThunder: false, isRain: false, isSnow: false },
-    { rx: /fair|clear|sunny/i,          desc: 'Clear',           icon: '☀️', isThunder: false, isRain: false, isSnow: false },
+    { rx: /thunder/i,                    desc: 'Thunderstorm',    icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /freezing rain/i,              desc: 'Freezing Rain',   icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
+    { rx: /heavy (rain|precip)/i,        desc: 'Heavy Rain',      icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
+    { rx: /rain|showers/i,              desc: 'Rain',            icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
+    { rx: /light rain|drizzle/i,        desc: 'Light Rain',      icon: 'drizzle',            isThunder: false, isRain: true,  isSnow: false },
+    { rx: /heavy snow|blizzard/i,       desc: 'Heavy Snow',      icon: 'snow',               isThunder: false, isRain: false, isSnow: true },
+    { rx: /snow|flurries/i,             desc: 'Snow',            icon: 'snow',               isThunder: false, isRain: false, isSnow: true },
+    { rx: /sleet|ice|wintry|freezing/i, desc: 'Wintry Mix',      icon: 'sleet',              isThunder: false, isRain: true,  isSnow: true },
+    { rx: /fog/i,                       desc: 'Fog',             icon: 'fog-day',            isThunder: false, isRain: false, isSnow: false },
+    { rx: /mist|haze/i,                 desc: 'Mist',            icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
+    { rx: /smoke/i,                     desc: 'Smoke',           icon: 'mist',               isThunder: false, isRain: false, isSnow: false },
+    { rx: /overcast|cloudy/i,           desc: 'Overcast',        icon: 'overcast-day',       isThunder: false, isRain: false, isSnow: false },
+    { rx: /mostly cloudy/i,             desc: 'Mostly Cloudy',   icon: 'overcast-day',       isThunder: false, isRain: false, isSnow: false },
+    { rx: /partly (cloudy|sunny)/i,     desc: 'Partly Cloudy',   icon: 'partly-cloudy-day',  isThunder: false, isRain: false, isSnow: false },
+    { rx: /mostly (clear|sunny)/i,      desc: 'Mostly Clear',    icon: 'clear-day',          isThunder: false, isRain: false, isSnow: false },
+    { rx: /fair|clear|sunny/i,          desc: 'Clear',           icon: 'clear-day',          isThunder: false, isRain: false, isSnow: false },
 ];
 
 /**
@@ -83,7 +83,7 @@ function parseMetarCondition(presentWeather, textDescription) {
     }
 
     // Unknown
-    return { desc: 'Unknown', icon: '❓', isThunder: false, isRain: false, isSnow: false };
+    return { desc: 'Unknown', icon: 'not-available', isThunder: false, isRain: false, isSnow: false };
 }
 
 /**

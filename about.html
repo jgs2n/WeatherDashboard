@@ -200,6 +200,18 @@
             <p class="about-text" style="margin-top:0.9rem;">The three data sources are intentionally layered by trust: Blitzortung strikes are the primary truth, METAR TS codes (when available at a nearby NWS station) serve as fallback confirmation, and radar dBZ provides supporting context only. If the WebSocket drops, the strike buffer drains naturally over 30 minutes and the system falls back to METAR-based thunderstorm detection. This degradation is silent — the display simply reverts to whatever the other sources support without any error state.</p>
         </section>
 
+        <section class="about-section about-section--philosophy">
+            <h2 class="about-heading">Alerts</h2>
+            <p class="about-text">Weather alerts are displayed in a three-lane hazard panel at the top of the dashboard, color-coded by source and severity.</p>
+            <p class="about-text" style="margin-top:1.4rem; color: var(--text-primary); font-weight:600; font-size:0.72rem; letter-spacing:0.05rem;">Red lane — NWS alerts</p>
+            <p class="about-text" style="margin-top:0.5rem;">Active NWS weather alerts for your location (US only). Alerts are classified into four severity tiers: advisory, watch, warning, and critical. The lane displays the highest-priority alert with its expiration time. Critical events trigger a flashing animation to draw attention. Tapping the lane opens a full modal listing every active and upcoming alert with headlines, descriptions, and recommended actions.</p>
+            <p class="about-text" style="margin-top:1.4rem; color: var(--text-primary); font-weight:600; font-size:0.72rem; letter-spacing:0.05rem;">Yellow lane — SPC convective outlook</p>
+            <p class="about-text" style="margin-top:0.5rem;">The Storm Prediction Center Day 1 categorical convective outlook for your location (US only). Categories range from Marginal (isolated severe storms possible) through High (major outbreak expected), each with a distinct color. The outlook is determined by a point-in-polygon match against the SPC GeoJSON polygons, so it reflects the specific risk zone your coordinates fall in rather than a broad regional summary.</p>
+            <p class="about-text" style="margin-top:1.4rem; color: var(--text-primary); font-weight:600; font-size:0.72rem; letter-spacing:0.05rem;">Blue lane — near-term storms</p>
+            <p class="about-text" style="margin-top:0.5rem;">A live summary of storm conditions derived from the nowcast system. This lane reflects the current lightning proximity state and precipitation status: whether lightning is active, nearby, or approaching, and whether rain is ongoing or imminent. It updates automatically as nowcast polls new radar and lightning data.</p>
+            <p class="about-text" style="margin-top:0.9rem;">For non-US locations, the red and yellow lanes are hidden since NWS and SPC are US-only services. The blue lane works worldwide using RainViewer radar and the global Blitzortung lightning network.</p>
+        </section>
+
         <section class="about-section">
             <h2 class="about-heading">Data Sources</h2>
             <ul class="about-sources">
@@ -212,6 +224,11 @@
                     <span class="about-source-name">NWS / NOAA</span>
                     <span class="about-source-desc">Official US forecasts and active weather alerts (US locations only)</span>
                     <a class="about-source-link" href="https://api.weather.gov" target="_blank" rel="noopener">api.weather.gov ↗</a>
+                </li>
+                <li>
+                    <span class="about-source-name">SPC / NOAA</span>
+                    <span class="about-source-desc">Storm Prediction Center Day 1 convective outlook — categorical severe weather risk (US only)</span>
+                    <a class="about-source-link" href="https://www.spc.noaa.gov" target="_blank" rel="noopener">spc.noaa.gov ↗</a>
                 </li>
                 <li>
                     <span class="about-source-name">Meteostat</span>

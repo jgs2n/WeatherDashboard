@@ -176,10 +176,10 @@ function _computePrecipNow(obs, radarState, country) {
         if (radarState.isRaining) {
             const dbz = radarState.dbz || 0;
             let phenomenon, desc, icon;
-            if (dbz >= 50)      { phenomenon = 'heavy rain'; desc = 'Heavy Rain'; icon = '\uD83C\uDF27\uFE0F'; }
-            else if (dbz >= 35) { phenomenon = 'rain';       desc = 'Rain';       icon = '\uD83C\uDF27\uFE0F'; }
-            else if (dbz >= 28) { phenomenon = 'rain';       desc = 'Light Rain'; icon = '\uD83C\uDF26\uFE0F'; }
-            else                { phenomenon = 'drizzle';    desc = 'Drizzle';    icon = '\uD83C\uDF26\uFE0F'; }
+            if (dbz >= 50)      { phenomenon = 'heavy rain'; desc = 'Heavy Rain'; icon = 'rain'; }
+            else if (dbz >= 35) { phenomenon = 'rain';       desc = 'Rain';       icon = 'rain'; }
+            else if (dbz >= 28) { phenomenon = 'rain';       desc = 'Light Rain'; icon = 'drizzle'; }
+            else                { phenomenon = 'drizzle';    desc = 'Drizzle';    icon = 'drizzle'; }
             return { phenomenon, desc, icon, source: radarSourceName, confidence: 0.9, observedAt: radarState.timestamp };
         }
         // Radar present but dry — return dry with high confidence
