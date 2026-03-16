@@ -754,17 +754,25 @@ function updateRedLane(nws) {
     }
 
     lane.classList.add(bestClass);
-    let text = allAlerts.length === 1 ? bestAlert.properties.event : `${allAlerts.length} NWS Alerts`;
+    const title = allAlerts.length === 1 ? bestAlert.properties.event : `${allAlerts.length} NWS Alerts`;
     // Append time period for the highest-priority alert
     const expires = bestAlert.properties.expires || bestAlert.properties.ends;
+    let timeText = '';
     if (expires) {
         const exp = new Date(expires);
         if (!isNaN(exp)) {
-            text += ' · through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+            timeText = 'through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
                 ' ' + exp.toLocaleDateString([], { weekday: 'short' });
         }
     }
-    lane.querySelector('.lane-status').textContent = text;
+    const statusEl = lane.querySelector('.lane-status');
+    statusEl.textContent = title;
+    if (timeText) {
+        const sub = document.createElement('div');
+        sub.className = 'lane-sub';
+        sub.textContent = timeText;
+        statusEl.appendChild(sub);
+    }
 }
 
 function updateYellowLane(spcData) {
@@ -783,16 +791,19 @@ function updateYellowLane(spcData) {
     const classMap = { MRGL: 'spc-mrgl', SLGT: 'spc-slgt', ENH: 'spc-enh', MDT: 'spc-mdt', HIGH: 'spc-high' };
     lane.classList.add(classMap[spcData.category] || 'spc-none');
 
-    let text = spcData.label;
+    const statusEl = lane.querySelector('.lane-status');
+    statusEl.textContent = spcData.label;
     if (spcData.expire) {
         const m = spcData.expire.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);
         if (m) {
             const exp = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
-            text += ' · through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+            const sub = document.createElement('div');
+            sub.className = 'lane-sub';
+            sub.textContent = 'through ' + exp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
                 ' ' + exp.toLocaleDateString([], { weekday: 'short' });
+            statusEl.appendChild(sub);
         }
     }
-    lane.querySelector('.lane-status').textContent = text;
 }
 
 function _deriveBlueLaneState(nowSummary) {

@@ -74,7 +74,7 @@ function resolveNightIcon(iconName, isDay) {
 function weatherIconImg(iconName, cssClass) {
     if (!iconName) return '';
     const cls = cssClass ? ` class="${cssClass}"` : '';
-    return `<img src="icons/meteocons/${iconName}.svg" alt=""${cls} loading="lazy">`;
+    return `<img src="icons/meteocons/${iconName}.svg" alt=""${cls} loading="lazy" onerror="this.style.display='none'">`;
 }
 
 // Dev utility — not called at load time.

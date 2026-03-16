@@ -1438,6 +1438,13 @@ body {
     letter-spacing: 0.04em;
 }
 
+.lane-sub {
+    font-size: 0.62rem;
+    font-weight: 400;
+    opacity: 0.8;
+    margin-top: 0.1rem;
+}
+
 .lane-secondary {
     font-size: 0.62rem;
     color: var(--text-secondary);
