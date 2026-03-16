@@ -1022,7 +1022,11 @@ function updateRecentPrecipTile(recentPrecip) {
     if (!precipHTML) return;
 
     const weatherDetails = document.querySelector('.weather-details');
-    if (weatherDetails) weatherDetails.insertAdjacentHTML('beforeend', precipHTML);
+    if (!weatherDetails) return;
+
+    // Remove any existing precip tiles to avoid duplicates
+    weatherDetails.querySelectorAll('.precip-spark-tile').forEach(el => el.remove());
+    weatherDetails.insertAdjacentHTML('beforeend', precipHTML);
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
