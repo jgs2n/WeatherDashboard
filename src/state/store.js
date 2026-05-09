@@ -52,7 +52,7 @@ let savedLocations = [];
 let activeLocation = null;
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 let lastRefreshTime = null;
-let locationTemps = {}; // keyed by location name
+let locationTemps = {}; // keyed by location name: { temp, code, is_day }
 let nwsShowByDefault = null;
 
 // Geo "Me" mode state
@@ -103,6 +103,7 @@ let sectionVisibility = { ...DEFAULT_SECTION_VISIBILITY };
 // Nowcast state
 let cachedNowSummary = null;
 let _nowcastPollTimer = null;
+let _nowcastPollGen = 0;  // generation counter — increments on start/stop to invalidate stale polls
 const NOWCAST_STORAGE_KEY = 'nowcastState';
 
 // Adaptive polling intervals (ms)
@@ -122,7 +123,6 @@ function loadSavedLocations() {
     // Load section order + visibility
     loadSectionOrder();
     loadSectionVisibility();
-
     const storedNWS = localStorage.getItem('nwsShowByDefault');
     nwsShowByDefault = storedNWS !== null ? storedNWS === 'true' : null;
 

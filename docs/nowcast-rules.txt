@@ -1,0 +1,474 @@
+Nowcast Module — Technical Rules Reference
+==========================================
+
+Source files:
+  src/services/nowcast.js      — orchestrator, scoring, polling
+  src/services/lightning.js    — GOES GLM polling, flash buffer, state summarization
+  src/services/radarSampler.js — tile sampling, hysteresis, motion vectors, timeline
+  src/ui/renderDashboard.js    — display composition, damping, condition overrides
+
+
+1. DATA SOURCES
+================
+
+Four independent data sources feed the nowcast:
+
+  Source              Provider                   Scope        Latency
+  ──────────────────  ─────────────────────────  ───────────  ─────────
+  Radar               IEM NEXRAD (US),           Point        ~5 min
+                      RainViewer (worldwide)
+  METAR observations  NWS station obs            US only      5–60 min
+  Lightning flashes   NOAA GOES GLM              Americas     ~1–5 min
+  Model forecast      Open-Meteo (WMO codes)     Global       Hourly
+
+Priority order: Radar > METAR > Model (for precipitation).
+Lightning is handled on a separate track (see section 6).
+
+
+2. RADAR SAMPLING
+==================
+
+2a. Tile math
+  - Web Mercator slippy map at zoom level 6.
+  - Lat/lon → tile X/Y + pixel offset within 256×256 tile.
+  - IEM NEXRAD URL:  mesonet.agron.iastate.edu/.../ridge::USCOMP-N0Q-{ts}/{z}/{x}/{y}.png
+  - RainViewer URL:  {host}{path}/{256}/{z}/{x}/{y}/2/1_1.png
+  - RainViewer frame list cached 5 min (API: api.rainviewer.com/public/weather-maps.json).
+
+2b. Neighborhood sampling
+  - Each sample reads a 3×3 pixel neighborhood (radius=1) and returns the max dBZ.
+  - This detects approaching storm edges a few minutes before a single-pixel read would.
+
+2c. Edge handling
+  - If the neighborhood returns null AND the point is within 5 px of a tile edge,
+    the adjacent tile is fetched and sampled from the opposite edge.
+
+2d. Color-to-dBZ mapping
+  - Radar tile pixel RGBA is matched to the nearest reference palette color
+    by Euclidean distance in RGB space.
+  - Transparent pixels (alpha < 20) = no data.
+  - Match distance > 30,000 = treat as no data.
+  - 13 intensity classes:
+
+      dBZ    Label       Color
+      ─────  ──────────  ──────────────
+       5     trace       light cyan
+      10     trace       cyan-blue
+      15     trace       blue
+      20     light       bright green
+      25     light       green
+      30     moderate    dark green
+      35     moderate    yellow
+      40     heavy       gold
+      45     heavy       orange
+      50     intense     red
+      55     intense     dark red
+      60     extreme     magenta
+      70     extreme     white
+
+2e. Frame history
+  - 10 frames kept (approximately 50 min of history at 5-min intervals).
+  - IEM: timestamps generated at 5-min intervals, rounded down to nearest 5.
+  - RainViewer: frame list from API, latest N frames.
+  - History is loaded once on first sample, oldest-first (so hysteresis processes
+    in chronological order).
+
+
+3. RAIN HYSTERESIS STATE MACHINE
+=================================
+
+Four states:
+
+  OFF ──────► PENDING_ON ──────► ON ──────► HOLDING ──────► OFF
+       dBZ≥28       2nd frame≥28     dBZ<22       12 min timeout
+                     (confirm)                    without dBZ≥22
+
+Thresholds:
+  ON_THRESHOLD   = 28 dBZ   (rain onset trigger)
+  OFF_THRESHOLD  = 22 dBZ   (rain cessation trigger)
+  ON_CONFIRM     = 2 consecutive frames ≥ 28 dBZ to declare ON
+  OFF_HOLD       = 12 min after last frame ≥ 22 dBZ before declaring OFF
+
+State transitions in detail:
+  OFF         + dBZ ≥ 28  → PENDING_ON (pendingCount = 1)
+  OFF         + dBZ < 28  → stay OFF
+  PENDING_ON  + dBZ ≥ 28  → increment pendingCount; if ≥ 2 → ON
+  PENDING_ON  + dBZ < 28  → back to OFF (pendingCount = 0)
+  ON          + dBZ ≥ 22  → stay ON (update lastOnTime)
+  ON          + dBZ < 22  → HOLDING (start 12-min timer)
+  HOLDING     + dBZ ≥ 22  → back to ON (restart timer)
+  HOLDING     + timeout   → OFF
+
+"isRaining" = true when state is ON or HOLDING.
+
+No-data frames (null dBZ):
+  - Don't change state, but HOLDING still checks timeout expiry.
+
+
+4. PRECIPITATION SCORING
+==========================
+
+Function: _scorePrecipNow(radarState, obs, modelWMO, isUS)
+
+Priority cascade:
+
+  4a. Radar available + raining
+      Classify by dBZ:
+        dBZ ≥ 50 → heavy rain
+        dBZ ≥ 35 → moderate rain
+        dBZ ≥ 28 → light rain
+        dBZ < 28 → light rain (drizzle icon)
+      If METAR reports snow and radar is wet → type = snow (trust METAR for precip type).
+      Confidence: 0.90 (US) / 0.85 (international).
+
+  4b. Radar available + dry
+      Check METAR drizzle override:
+        If METAR age < 15 min AND metarWeight > 0.1 AND METAR description includes
+        "drizzle", "mist", "freezing drizzle", or "light" rain:
+          → active = true, type = rain, intensity = light
+          (Radar is blind to very light precip — trust METAR here)
+      Otherwise: dry, confidence 0.75 (US) / 0.65 (international).
+
+  4c. No radar, METAR available
+      If METAR reports rain/snow/thunder AND freshness weight > 0.05:
+        → classify type and intensity from description
+        Confidence: SCORE_METAR_PRECIP_MAX (0.70) × freshness weight
+      If METAR reports dry:
+        Confidence: SCORE_METAR_DRY_MAX (0.55) × freshness weight
+
+  4d. No radar, no METAR — model gap-fill
+      WMO codes ≥ 51 = precipitation.
+      Confidence: SCORE_MODEL_PRECIP (0.30).
+
+
+5. SKY STATE SCORING
+=====================
+
+Function: _scoreSkyState(obs, modelWMO)
+
+5a. METAR age-based freshness decay:
+  Age ≤ 20 min → score = 0.90
+  Age 20–40    → score = 0.70
+  Age 40–60    → score = 0.50
+  Age > 60     → score = 0.30
+
+5b. Model WMO code mapping:
+  WMO ≤ 1  → Clear
+  WMO  2   → Partly Cloudy
+  WMO  3   → Overcast
+  WMO 45/48 → Fog
+  Model confidence: SCORE_MODEL_SKY (0.35).
+
+5c. Hysteresis (prevents oscillation at METAR/model boundary):
+  If previous source was METAR:
+    METAR must drop below SKY_HYSTERESIS_DOWN (0.25) to yield to model.
+  If previous source was model:
+    METAR must exceed SKY_HYSTERESIS_UP (0.45) to reclaim from model.
+  Otherwise: pick whichever source has the higher score.
+
+
+6. LIGHTNING CLASSIFICATION
+============================
+
+6a. NOAA GOES GLM (Geostationary Lightning Mapper)
+  - Poll-based ingestion from NOAA nowCOAST ArcGIS MapServer (or configurable proxy).
+  - Coverage: Americas only (~52N–52S, GOES-East + GOES-West combined).
+  - Spatial resolution: ~10 km (storm-scale flash detection, NOT precise strike localization).
+  - Polls at adaptive cadence: 60s (active), 2 min (unsettled), 5 min (quiet).
+  - Flashes are buffered in a rolling 20-min window.
+  - Auto-prunes on each poll cycle.
+  - Future timestamps (> 1 min ahead of now) are rejected.
+  - Deduplication: flashes within 0.01° lat/lon and 5s of an existing buffer entry are skipped.
+
+  Adapter boundary: fetchGlmFlashes(lat, lon) is the sole data ingestion point.
+  Default uses nowCOAST; can be swapped to a proxy by setting LIGHTNING_CFG.GLM_ENDPOINT.
+
+  Coverage provider: getLightningDataSource(lat, lon, country) returns:
+    'glm'            — Americas (within GOES coverage)
+    'metar-fallback' — US locations outside GLM coverage (METAR TS codes only)
+    'none'           — non-US locations outside GLM coverage
+
+6b. Flash distance
+  - Equirectangular approximation: 69 mi/deg lat, cos-adjusted for lon.
+  - Accurate within ~60 km (sufficient for 40 mi classification radius).
+  - Distances are approximate and should not imply precise flash localization.
+
+6c. Buffer classification (summarizeLightningBuffer)
+  Distance and recency buckets (broader than former Blitzortung bands):
+    within10mi_10m: flashes ≤ 10 mi in last 10 min
+    within20mi_15m: flashes ≤ 20 mi in last 15 min
+    within40mi_20m: flashes ≤ 40 mi in last 20 min (full buffer window)
+
+  State classification:
+    within10mi_10m > 0  → state = 'active',      confidence = 'high'
+    within20mi_15m > 0  → state = 'nearby',       confidence = 'medium'
+    within40mi_20m > 0  → state = 'approaching',  confidence = 'medium'
+    else                → state = 'none',          confidence = 'none'
+
+  Also tracks: nearest flash distance (mi, approximate), poll success status,
+  buffer age (ms since last flash), last flash timestamp.
+
+  Trend tracking:
+    Recent (0–10 min) vs prior (10–20 min) flash counts within 40 mi.
+    rising  — recent count > prior count + 1
+    falling — recent count < prior count × 0.5 (and prior ≥ 2)
+    steady  — otherwise
+
+6d. Three-source merge (_computeLightningState)
+
+  Source hierarchy:
+    GOES GLM flashes  = primary truth (Americas)
+    METAR TS codes    = fallback / confirmation
+    Radar dBZ         = supporting context ONLY (never promotes to thunderstorm)
+
+  Merge rules:
+
+    Rule 1: GLM active/nearby + fresh METAR explicit thunder (age < 20 min)
+      → boost confidence = 'high', source = 'merged'
+
+    Rule 2: GLM active within 10 mi + METAR explicit thunder
+      → promote to state = 'active', confidence = 'high', source = 'merged'
+
+    Rule 3: GLM present without METAR thunder
+      → keep GLM classification as-is
+
+    Rule 4: No GLM data + METAR explicitly reports TS + age < 20 min
+      → state = 'nearby', confidence = 'medium', source = 'metar-fallback'
+
+    Rule 5: No GLM data + METAR explicitly reports TS + age 20–45 min
+      → state = 'nearby', confidence = 'low', source = 'metar-fallback'
+
+    Rule 6: Radar alone NEVER promotes thunderstorm or thunder-nearby state
+
+    METAR fallback only applies for explicit METAR TS codes (source = 'METAR'),
+    not for radar-inferred thunder.
+
+6e. Motion-aware approaching detection
+  If state = 'approaching' AND motion vector speed > 10 km/h:
+    → flag _isApproaching = true (used by display layer for "Storm approaching" text).
+  If state = 'approaching' AND trend = 'rising' AND motion speed > 5 km/h:
+    → also flag _isApproaching = true (trend strengthens approaching signal).
+
+
+7. CONDITION OVERRIDE LADDER
+==============================
+
+The lightning state modifies the displayed condition through a strict priority ladder.
+
+  Lightning state    Precip phenomenon    Display result
+  ─────────────────  ───────────────────  ──────────────────────────────
+  active             rain / heavy rain    → "Thunderstorm"
+  active             drizzle              → "Rain — thunder nearby"
+  active             snow                 → "Snow — thunder nearby"
+  active             dry (strikes ≤5 mi)  → "Thunder nearby"
+  nearby             rain/heavy/drizzle   → "Rain — thunder nearby"
+  nearby             snow                 → "Snow — thunder nearby"
+  approaching        (any)                → NO CHANGE to primary condition
+  none               (any)                → NO CHANGE
+
+  Critical rule: Radar dBZ alone, no matter how high (even ≥ 45), NEVER triggers
+  a thunderstorm label. Only confirmed strikes do.
+
+
+8. PRECIPITATION TREND (0–60 min)
+===================================
+
+8a. Timeline builder (buildPrecipTimeline)
+  - 12 buckets at 5-min intervals (0, 5, 10, ..., 55 min).
+  - Projects current dBZ forward using least-squares slope from last 6 frames (~30 min).
+  - Base dBZ: current reading (or ON_THRESHOLD if raining with null, or 0 if dry).
+  - Returns null if fewer than 3 frames in history.
+
+  Precipitation classes (per bucket):
+    precipClass 0 = dry          (projected dBZ < 18)
+    precipClass 1 = drizzle      (18–27 dBZ)
+    precipClass 2 = rain         (28–34 dBZ)
+    precipClass 3 = heavy rain   (35–49 dBZ)
+    precipClass 4 = convective   (≥ 50 dBZ)
+
+  Confidence decay per bucket:
+    confidence = max(0.1, 1.0 - i × 0.07)
+    Bucket 0  → 1.00
+    Bucket 6  → 0.58  (30 min out)
+    Bucket 11 → 0.23  (55 min out)
+
+8b. Timeline summarization (_summarizePrecipTimeline)
+  Converts timeline into natural language with confidence tiers.
+
+  No timeline (< 3 frames):
+    → Simple fallback strings at low confidence ("Rain in ~X min", "Rain ending in ~X min")
+
+  Intermittent (3+ dry→wet transitions):
+    → "Intermittent rain next hour" (low confidence)
+
+  Average confidence of wet buckets determines phrasing tier:
+    High (≥ 0.7):  "Rain continuing for ~X min"  /  "Rain beginning in ~X min"
+    Medium (0.4–0.7): "Rain may continue ~X min"  /  "Rain may begin in ~X–X min"
+    Low (< 0.4):   "Rain now, clearing later"     /  "Showers possible soon"
+
+8c. Rain timing estimation (estimateRainTiming)
+  Regression-based prediction for rain onset/offset.
+
+  Gates (all must pass to show a prediction):
+    - Slope must exceed 2 dBZ/frame (MIN_SLOPE_DBZ)
+    - Trend direction must be consistent (≤ 1 sign reversal)
+    - At least one recent frame must show a meaningful echo
+
+  Not raining (predicting onset):
+    - Slope must be positive (rising)
+    - Recent frame must have ≥ 18 dBZ (BEGIN_SIGNAL_DBZ)
+    - Gap = ON_THRESHOLD (28) − current dBZ; time = (gap / slope) × 5 min
+    - Must result in 0–60 min range, else suppressed
+
+  Raining (predicting cessation):
+    - Slope must be negative (falling)
+    - Recent frame must have ≥ 30 dBZ (END_SIGNAL_DBZ)
+    - If already below OFF_THRESHOLD (22): return remaining hold time (12 min)
+    - Otherwise: time to cross OFF_THRESHOLD + 12 min hold period
+    - Must result in > 0 and ≤ 60 min, else suppressed
+
+  Confidence:
+    |slope| ≥ 5 → high
+    |slope| ≥ 3 → med
+    else        → low
+
+
+9. MOTION VECTOR ESTIMATION
+=============================
+
+Function: estimateMotionVector(lat, lon, isUS)
+
+  - Takes 3 most recent radar frames.
+  - Samples a 5×5 grid (0.02° spacing ≈ 2 km) around the point for each frame.
+  - Creates binary rain masks (dBZ ≥ 22 = rain pixel).
+  - For consecutive frame pairs, searches ±2 pixel shifts in 2D for best overlap score.
+  - Requires overlap score ≥ 2 pixels to accept a shift.
+  - If 2 shifts available, directions must agree within 45° (otherwise → null).
+  - Averages shifts, converts to km/h using grid spacing (~2 km) and frame interval (5 min).
+  - Returns null if: < 3 frames, < 2 frames with data, inconsistent directions, speed < 1 km/h.
+
+
+10. DISPLAY DAMPING (Jitter Prevention)
+=========================================
+
+Function: _applyDisplayDamping(newLabel)
+
+  Prevents rapid label flipping on borderline conditions.
+
+  Escalations (instant switch):
+    - Dry/clear → any precip or thunder
+    - Any precip → thunderstorm
+    - Clear/cloudy → fog
+
+  De-escalations and lateral moves:
+    - Require JITTER_CONFIRM_CYCLES (2) consecutive polls with the new label
+      before the display actually changes.
+
+  Example sequence:
+    Poll 1: Radar shows rain        → "Rain" (escalation, instant)
+    Poll 2: Rain ends (radar dry)   → stays "Rain" (de-escalation pending, count=1)
+    Poll 3: Still dry               → "Clear" (de-escalation confirmed after 2 polls)
+
+
+11. DISPLAY COMPOSITION
+=========================
+
+11a. Primary label (_pickNowcastLabel)
+  Priority:
+    1. Active thunder + precip → "Thunderstorm" (heavy) / "Rain with thunder" / "Snow with thunder"
+    2. Active thunder + no precip + flashes ≤ 10 mi → "Thunder nearby"
+    3. Precip active → classify by type/intensity, append "— thunder nearby" if nearby state
+    4. Visibility (future — always null in V1)
+    5. Sky cover
+    6. "Unknown" (last resort)
+
+11b. Evidence line (_pickEvidenceLine)
+  - Active/nearby thunder → "Lightning detected ~X mi"
+  - Radar precip → "just now"
+  - METAR/station timestamp → "Xm ago" or "just now"
+  - Model-only → empty string
+
+11c. Rationale (_buildRationale)
+  Source line + 1–2 sentences explaining the data:
+    - "Radar shows heavy rain."
+    - "Station reports light rain."
+    - "Radar dry; station reports drizzle — using station."
+    - "Lightning detected nearby — promoted to thunderstorm."
+    - "Lightning remains distant — no condition change."
+    - "No station or radar data available."
+    - "Station data too old."
+
+11d. Lightning line text (_lightningLineText)
+  Secondary blue lane text based on lightning state (GLM-honest, no precise distance):
+    active + dense close flashes (≥3 within 10 mi) → "⚡ Frequent lightning nearby"
+    active                     → "⚡ Lightning nearby"
+    nearby                     → "⚡ Nearby lightning detected"
+    approaching + no inbound   → "⚡ Distant lightning detected"
+    approaching + moving toward→ "⚡ Storm with lightning approaching"
+    metar-fallback             → "⚡ Thunder reported nearby"
+    none                       → null (no line shown)
+
+
+12. ADAPTIVE POLLING
+=====================
+
+Uses setTimeout (not setInterval) so the interval adapts each cycle.
+
+  Condition                              Interval
+  ───────────────────────────────────    ─────────
+  Raining OR rain within 30 min         2 min (POLL_ACTIVE_MS)
+    OR active lightning
+  Dry, no nearby echoes, no lightning   5 min (POLL_DRY_MS)
+  Fallback / unknown                    3 min (POLL_DEFAULT_MS)
+
+  Tab visibility:
+    - Polling pauses when document.hidden = true.
+    - Resumes immediately (500 ms delay) when tab becomes visible.
+
+
+13. SYNTHESIZED NOWCAST STATE
+===============================
+
+Function: deriveNowcastState(radarState, obs, modelWMO, lightningState, trend, country)
+
+Each question is answered independently, then merged:
+  precip? → _scorePrecipNow()   (see section 4)
+  sky?    → _scoreSkyState()    (see section 5, includes hysteresis)
+  thunder?→ _normalizeThunder() (string confidence → numeric: high=0.9, medium=0.6, low=0.3)
+
+Returns:
+  { precip, sky, thunder, trend, sources }
+
+Sources list is derived from active fields (no duplicates, model listed only if sole source).
+
+
+14. DEGRADATION & FALLBACK
+=============================
+
+  - Radar unavailable: METAR fills in for precipitation, model fills gap after METAR.
+  - METAR unavailable (non-US or station down): radar + model only.
+  - GLM unavailable or outside coverage: buffer drains naturally over 20 min as flashes age out.
+    System silently falls back to METAR-based thunderstorm detection if available.
+    No error state is shown to the user. Outside the Americas, GLM is not available at all;
+    METAR TS codes are the only lightning signal (US only).
+  - Model data always available as last-resort gap-fill (lowest confidence).
+  - All degradations are silent — the display reverts to whatever the remaining sources support.
+
+
+15. CONFIDENCE SCORING CONSTANTS
+==================================
+
+  Constant                 Value   Context
+  ───────────────────────  ──────  ────────────────────────────
+  SCORE_RADAR_WET_US       0.90   Radar wet, US (NEXRAD)
+  SCORE_RADAR_DRY_US       0.75   Radar dry, US
+  SCORE_RADAR_WET_INTL     0.85   Radar wet, international (RainViewer)
+  SCORE_RADAR_DRY_INTL     0.65   Radar dry, international
+  SCORE_METAR_PRECIP_MAX   0.70   Fresh METAR reports precip
+  SCORE_METAR_DRY_MAX      0.55   Fresh METAR reports dry
+  SCORE_METAR_SKY_MAX      0.90   Fresh METAR sky observation
+  SCORE_MODEL_PRECIP       0.30   Model WMO gap-fill (precip)
+  SCORE_MODEL_SKY          0.35   Model WMO gap-fill (sky)
+  SKY_HYSTERESIS_DOWN      0.25   METAR must drop below this to yield to model
+  SKY_HYSTERESIS_UP        0.45   METAR must exceed this to reclaim from model
+  JITTER_CONFIRM_CYCLES    2      Polls required to confirm de-escalation

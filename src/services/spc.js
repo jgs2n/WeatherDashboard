@@ -9,8 +9,8 @@ const SPC_CATEGORIES = {
     'HIGH': { label: 'High Risk',      rank: 6 }
 };
 
-let _spcCache = null;
-let _spcCacheTime = 0;
+let _spcCache   = { data: null, ts: null };
+let _spcPending = null;
 const SPC_CACHE_TTL = 30 * 60 * 1000;
 
 // Ray-casting point-in-polygon
@@ -57,21 +57,27 @@ function _findHighestCategory(geojson, lat, lon) {
 }
 
 async function fetchSPCOutlook(lat, lon) {
-    try {
-        let geojson = _spcCache;
-        if (!geojson || (Date.now() - _spcCacheTime > SPC_CACHE_TTL)) {
-            const resp = await fetch('https://www.spc.noaa.gov/products/outlook/day1otlk_cat.lyr.geojson');
-            if (!resp.ok) {
-                console.warn(`[SPC] HTTP ${resp.status}`);
-                return null;
-            }
-            geojson = await resp.json();
-            _spcCache = geojson;
-            _spcCacheTime = Date.now();
-        }
-        return _findHighestCategory(geojson, lat, lon);
-    } catch (err) {
-        console.warn('[SPC] fetch failed:', err.message);
-        return null;
+    if (_spcCache.data && _spcCache.ts && (Date.now() - _spcCache.ts < SPC_CACHE_TTL)) {
+        return _findHighestCategory(_spcCache.data, lat, lon);
     }
+    if (_spcPending) {
+        const geojson = await _spcPending;
+        return geojson ? _findHighestCategory(geojson, lat, lon) : null;
+    }
+
+    _spcPending = (async () => {
+        try {
+            const resp = await fetch('https://www.spc.noaa.gov/products/outlook/day1otlk_cat.lyr.geojson');
+            if (!resp.ok) { console.warn(`[SPC] HTTP ${resp.status}`); return null; }
+            const geojson = await resp.json();
+            _spcCache = { data: geojson, ts: Date.now() };
+            return geojson;
+        } catch (err) {
+            console.warn('[SPC] fetch failed:', err.message);
+            return null;
+        }
+    })().finally(() => { _spcPending = null; });
+
+    const geojson = await _spcPending;
+    return geojson ? _findHighestCategory(geojson, lat, lon) : null;
 }

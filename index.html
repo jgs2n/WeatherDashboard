@@ -36,6 +36,10 @@
             <button class="refresh-btn" id="refreshBtn" onclick="refreshWeather()">
                 <span class="refresh-icon" id="refreshIcon">↻</span>
             </button>
+            <select id="collectCitySelect" style="display:none"><option value="all">All Cities</option></select>
+            <button id="collectBtn" style="display:none" onclick="toggleCollection()">⏺ Collect</button>
+            <button id="healthCheckBtn" style="display:none" onclick="runHealthCheck()" title="Run collection health check">🩺 Check</button>
+            <span id="collectStatus" style="display:none"></span>
             <span class="last-updated" id="lastUpdated"></span>
         </div>
         <div id="locationTabs" class="location-tabs"></div>
@@ -124,33 +128,38 @@
         </div>
     </div>
 
-    <script src="src/state/store.js?v=1.13.0"></script>
-    <script src="src/utils/weatherCodes.js"></script>
+    <script src="src/state/store.js?v=1.13.2"></script>
+    <script src="src/utils/weatherCodes.js?v=1.0.0"></script>
     <script src="src/utils/risk.js?v=1.2.7"></script>
     <script src="src/utils/dailyIcon.js?v=1.1.0"></script>
-    <script src="src/utils/dom.js?v=0.6.0"></script>
-    <script src="src/utils/moon.js"></script>
-    <script src="src/utils/metarParse.js"></script>
+    <script src="src/utils/dom.js?v=0.6.1"></script>
+    <script src="src/utils/moon.js?v=1.0.0"></script>
+    <script src="src/utils/metarParse.js?v=1.0.0"></script>
     <script src="src/utils/format.js?v=0.8.7"></script>
+    <script src="src/utils/chartHelpers.js?v=1.0.0"></script>
+    <script src="src/utils/geo.js?v=1.0.0"></script>
     <script src="src/services/geocode.js?v=1.9.3"></script>
-    <script src="src/services/openMeteo.js"></script>
-    <script src="src/services/nws.js"></script>
-    <script src="src/services/spc.js"></script>
+    <script src="src/services/openMeteo.js?v=1.0.2"></script>
+    <script src="src/services/modelComparison.js?v=1.0.0"></script>
+    <script src="src/services/nws.js?v=1.0.0"></script>
+    <script src="src/services/spc.js?v=1.0.0"></script>
     <script src="src/services/recentPrecip.js?v=1.8.1"></script>
     <script src="src/services/observations.js?v=1.8.1"></script>
-    <script src="src/services/radarSampler.js"></script>
-    <script src="src/services/lightning.js"></script>
-    <script src="src/services/nowcast.js"></script>
-    <script src="src/services/geolocation.js"></script>
+    <script src="src/services/radarSampler.js?v=1.0.0"></script>
+    <script src="src/services/lightning.js?v=1.0.0"></script>
+    <script src="src/services/nowcastLogger.js?v=1.0.2"></script>
+    <script src="src/services/nowcast.js?v=1.0.5"></script>
+    <script src="src/services/nowcastDisplay.js?v=1.0.0"></script>
+    <script src="src/services/geolocation.js?v=1.0.0"></script>
     <script src="src/ui/locationPicker.js?v=1.9.3"></script>
-    <script src="src/ui/pressureChart.js"></script>
+    <script src="src/ui/pressureChart.js?v=1.0.0"></script>
     <script src="src/ui/aqiChart.js?v=1.0.5"></script>
-    <script src="src/ui/precipChart.js"></script>
+    <script src="src/ui/precipChart.js?v=1.0.0"></script>
     <script src="src/ui/forecastModal.js?v=1.1.0"></script>
-    <script src="src/ui/hourly.js"></script>
-    <script src="src/ui/share.js"></script>
-    <script src="src/ui/renderDashboard.js?v=1.13.0"></script>
+    <script src="src/ui/hourly.js?v=1.0.0"></script>
+    <script src="src/ui/share.js?v=1.0.0"></script>
+    <script src="src/ui/renderDashboard.js?v=1.13.5"></script>
     <script src="src/ui/tabDrag.js?v=1.1.7"></script>
-    <script src="src/main.js?v=1.13.0"></script>
+    <script src="src/main.js?v=1.13.8"></script>
 </body>
 </html>

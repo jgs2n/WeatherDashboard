@@ -2,11 +2,28 @@
 // Bootstrap, event wiring, location management, data fetching orchestration.
 // Loaded last in index.html. All dependencies are globals from prior <script> tags.
 
+// Cleanup helper — stops polling/lightning/radar for a location switch
+function cleanupLocationState() {
+    stopNowcastPolling();
+    if (typeof stopLightning === 'function') stopLightning();
+    if (typeof resetRadarState === 'function') resetRadarState();
+}
+
+const LOCATION_MATCH_DEG = 0.01;
+function locationsMatch(a, b) {
+    return a.lat != null && b.lat != null &&
+        Math.abs(a.lat - b.lat) < LOCATION_MATCH_DEG &&
+        Math.abs(a.lon - b.lon) < LOCATION_MATCH_DEG;
+}
+
 // Render location tabs
 function renderTabs() {
     const tabsContainer = document.getElementById('locationTabs');
 
     const locationTabs = savedLocations.map((loc, index) => {
+        const temps = locationTemps[loc.name];
+        const iconName = temps ? (temps.nowcastIcon || getWeatherIcon(temps.code, temps.is_day)) : null;
+        const tabIcon = iconName ? weatherIconImg(iconName, 'tab-icon-img') + ' ' : '';
         return `
         <div class="location-tab ${!geoMeActive && activeLocation && activeLocation.name === loc.name ? 'active' : ''}"
              ${!isTouchDevice ? 'draggable="true"' : ''}
@@ -18,7 +35,7 @@ function renderTabs() {
              ondragend="handleDragEnd(event)"` : ''}>
             <div class="location-tab-content">
                 <span>${loc.displayName}</span>
-                ${locationTemps[loc.name] ? `<span class="tab-temp">${weatherIconImg((WEATHER_CODES[locationTemps[loc.name].code] || WEATHER_CODES[0]).icon, 'tab-icon-img')} ${locationTemps[loc.name].temp}°F</span>` : ''}
+                ${temps ? `<span class="tab-temp">${tabIcon}${temps.temp}°F</span>` : ''}
             </div>
             ${savedLocations.length > 1 ? `<button class="remove-btn" onclick="event.stopPropagation(); confirmRemove(this, ${index})" title="Remove location">×</button>` : ''}
         </div>
@@ -51,20 +68,69 @@ function renderTabs() {
     if (isTouchDevice) {
         initTouchReorder();
     }
+    _populateCollectSelect();
 }
 
-// Fetch current temps for all non-active locations in background
+// Background fetch: temps + nowcast icons for all location tabs.
+let _bgTempRunning = false;
 async function fetchAllLocationTemps() {
-    for (const loc of savedLocations) {
-        if (!loc.lat || !loc.lon) continue;
-        if (locationTemps[loc.name]) continue; // already have it
-        const result = await fetchTabTemp(loc.lat, loc.lon);
-        if (result) {
-            locationTemps[loc.name] = result;
+    if (_bgTempRunning) return;
+    // Phase 1 fix: skip background fanout while collection mode is active.
+    // Collection mode already cycles through cities and the bg refresh just
+    // duplicates that traffic, doubling the Open-Meteo request load.
+    if (typeof _collectActive !== 'undefined' && _collectActive) return;
+    _bgTempRunning = true;
+    try {
+        for (const loc of savedLocations) {
+            if (!loc.lat || !loc.lon) continue;
+            const result = await fetchTabTemp(loc.lat, loc.lon);
+            if (result) {
+                locationTemps[loc.name] = { ...locationTemps[loc.name], ...result };
+            }
+            // Nowcast icon for tab — keyed by loc.name (loop var), never activeLocation.name
+            try {
+                if (typeof resetSkyHysteresis === 'function') resetSkyHysteresis();
+                if (typeof resetRadarState === 'function') resetRadarState();
+                const summary = await getNowSummary({
+                    lat: loc.lat, lon: loc.lon,
+                    country: loc.country || '',
+                    modelWMO: result ? result.code : null,
+                    locationName: loc.name,       // explicit — avoids reading activeLocation.name
+                    stateCode: loc.stateCode || null,
+                    modelContext: result ? result.modelContext : null,
+                });
+                if (summary && summary.nowcastState) {
+                    const isDay = result ? result.is_day : true;
+                    const label = _pickNowcastLabel(summary.nowcastState);
+                    const icon = resolveNightIcon(label.icon, isDay);
+                    if (!locationTemps[loc.name]) locationTemps[loc.name] = {};
+                    locationTemps[loc.name].nowcastIcon = icon;
+                }
+            } catch (e) {
+                console.warn(`[Tabs] Nowcast icon failed for ${loc.name}:`, e.message);
+            }
             renderTabs();
-        } else {
-            console.log('Background temp fetch failed for', loc.name);
         }
+    } finally {
+        _bgTempRunning = false;
+    }
+}
+
+let _tabRefreshInterval = null;
+function startTabRefresh() {
+    if (_tabRefreshInterval) clearInterval(_tabRefreshInterval);
+    _tabRefreshInterval = setInterval(() => {
+        fetchAllLocationTemps();
+    }, 5 * 60 * 1000);
+}
+// Phase 1 fix: stop the background tab refresh. Previously stopCollection()
+// did not clear this interval, so the 5-min background fanout kept hitting
+// Open-Meteo for every saved city long after the user had ended their
+// collection session — this is the "locked out during analysis window" symptom.
+function stopTabRefresh() {
+    if (_tabRefreshInterval) {
+        clearInterval(_tabRefreshInterval);
+        _tabRefreshInterval = null;
     }
 }
 
@@ -85,7 +151,8 @@ function refreshWeather() {
     const btn = document.getElementById('refreshBtn');
     if (btn) btn.classList.add('refreshing');
 
-    // Clear cached temps so all get re-fetched
+    // Clear cached temps so all get re-fetched; keep nowcast icons
+    // so tabs show stale icons until replaced by fresh data
     locationTemps = {};
 
     const done = () => {
@@ -95,7 +162,7 @@ function refreshWeather() {
     if (activeLocation.lat && activeLocation.lon) {
         fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation).then(done).catch(done);
     } else {
-        fetchWeatherData().then(done).catch(done);
+        _resolveAndFetch(activeLocation.name).then(done).catch(done);
     }
 }
 
@@ -104,10 +171,7 @@ async function showAddLocationPrompt() {
     try {
         const location = await showAddLocationModal();
 
-        const exists = savedLocations.find(loc =>
-            loc.lat && Math.abs(loc.lat - location.lat) < 0.01 &&
-            loc.lon && Math.abs(loc.lon - location.lon) < 0.01
-        );
+        const exists = savedLocations.find(loc => locationsMatch(loc, location));
         if (exists) {
             alert('This location is already saved!');
             return;
@@ -118,7 +182,9 @@ async function showAddLocationPrompt() {
             displayName: extractDisplayName(location.name),
             lat: location.lat,
             lon: location.lon,
-            country: location.country
+            country: location.country,
+            countryCode: location.countryCode || null,
+            stateCode: location.stateCode || null
         };
 
         savedLocations.push(newLocation);
@@ -142,10 +208,7 @@ async function addNewLocation(locationName) {
             : geocodeResult;
 
         // Check if location already exists by coordinates
-        const exists = savedLocations.find(loc =>
-            loc.lat && Math.abs(loc.lat - location.lat) < 0.01 &&
-            loc.lon && Math.abs(loc.lon - location.lon) < 0.01
-        );
+        const exists = savedLocations.find(loc => locationsMatch(loc, location));
         if (exists) {
             alert('This location is already saved!');
             return;
@@ -156,7 +219,9 @@ async function addNewLocation(locationName) {
             displayName: extractDisplayName(location.name),
             lat: location.lat,
             lon: location.lon,
-            country: location.country
+            country: location.country,
+            countryCode: location.countryCode || null,
+            stateCode: location.stateCode || null
         };
 
         savedLocations.push(newLocation);
@@ -188,12 +253,11 @@ function switchLocation(index) {
         _previousActiveLocation = null;
     }
     // Stop nowcast polling + lightning WS for old location + reset radar state
-    stopNowcastPolling();
-    if (typeof stopLightning === 'function') stopLightning();
-    if (typeof resetRadarState === 'function') resetRadarState();
+    cleanupLocationState();
     activeLocation = savedLocations[index];
     saveLocations();
     renderTabs();
+    if (!_collectActive) fetchAllLocationTemps();
     // Use stored coordinates directly - no search needed
     fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
 }
@@ -217,7 +281,7 @@ function removeLocation(index) {
             if (activeLocation.lat && activeLocation.lon) {
                 fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
             } else {
-                fetchWeatherData();
+                _resolveAndFetch(activeLocation.name);
             }
         } else {
             activeLocation = null;
@@ -294,7 +358,9 @@ function _startGeoMeWatch() {
                 lon: pos.lon,
                 name: rev ? rev.name : 'My Location',
                 displayName: rev ? extractDisplayName(rev.name) : 'My Location',
-                country: rev ? rev.country : null
+                country: rev ? rev.country : null,
+                countryCode: rev ? rev.countryCode : null,
+                stateCode: rev ? rev.stateCode : null
             };
 
             lastGeoPosition = geoLoc;
@@ -638,65 +704,31 @@ function fillTier2Data(openMeteo, airQuality, nws, location, modelComparison, re
     if (nowSummary) updateNowcastDisplay(nowSummary);
 }
 
-async function fetchWeatherData() {
+// Geocode a location name, show picker if needed, then fetch via fetchWeatherDataDirect.
+// Used only when activeLocation lacks coordinates.
+async function _resolveAndFetch(locationName) {
     const container = document.getElementById('weatherContainer');
     const previousContent = container.innerHTML;
     container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading weather data...</div>';
 
     try {
-        let locationName = activeLocation ? activeLocation.name : '';
-
-        if (!locationName) {
-            throw new Error('No location specified');
-        }
+        if (!locationName) throw new Error('No location specified');
 
         const geocodeResult = await geocodeLocation(locationName);
         const location = Array.isArray(geocodeResult)
             ? await showLocationPicker(geocodeResult)
             : geocodeResult;
 
-        // Fire ALL fetches simultaneously
-        const tier1Promise = fetchForecast(location.lat, location.lon);
-        const tier2Promise = Promise.all([
-            fetchAirQuality(location.lat, location.lon),
-            fetchNWS(location.lat, location.lon),
-            fetchModelComparison(location.lat, location.lon),
-            fetchRecentPrecip(location.lat, location.lon),
-            getNowSummary({ lat: location.lat, lon: location.lon, country: location.country }),
-            fetchObservationHistory(location.lat, location.lon),
-            fetchStationObservation(location.lat, location.lon),
-            fetchSPCOutlook(location.lat, location.lon)
-        ]);
-
-        // Render as soon as Tier 1 resolves (~500ms)
-        const openMeteoData = await tier1Promise;
-        renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
-
-        // Fill in Tier 2 when ready
-        const [airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs, spcData] = await tier2Promise;
-
-        const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
-        cachedStationObs = stationObs;
-        cachedNowSummary = nowSummary;
-        saveNowcastState(nowSummary, location.lat, location.lon);
-
-        fillTier2Data(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary, spcData);
-
-        // Start nowcast polling + lightning WebSocket
-        startNowcastPolling(location.lat, location.lon, location.country);
-        if (typeof startLightning === 'function') startLightning(location.lat, location.lon);
-
-        // Deferred AQI retry — if the initial fetch failed, try once more after 2s
-        if (!airQualityData) {
-            setTimeout(async () => {
-                try {
-                    const retryData = await fetchAirQuality(location.lat, location.lon);
-                    if (retryData) updateAQITile(retryData);
-                } catch (_) { /* already logged by fetchAirQuality */ }
-            }, 2000);
+        // Backfill coordinates so future calls skip geocoding
+        if (activeLocation && activeLocation.name === locationName) {
+            activeLocation.lat = location.lat;
+            activeLocation.lon = location.lon;
+            activeLocation.country = location.country;
+            saveLocations();
         }
+
+        await fetchWeatherDataDirect(location.lat, location.lon, location);
     } catch (error) {
-        // If user cancelled location picker, restore previous view
         if (error.message === 'Location selection cancelled') {
             container.innerHTML = previousContent;
             return;
@@ -718,7 +750,6 @@ async function fetchWeatherDataDirect(lat, lon, location) {
             fetchNWS(lat, lon),
             fetchModelComparison(lat, lon),
             fetchRecentPrecip(lat, lon),
-            getNowSummary({ lat, lon, country: location.country }),
             fetchObservationHistory(lat, lon),
             fetchStationObservation(lat, lon),
             fetchSPCOutlook(lat, lon)
@@ -728,19 +759,47 @@ async function fetchWeatherDataDirect(lat, lon, location) {
         const openMeteoData = await tier1Promise;
         renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
 
+        // Build modelContext from the already-fetched forecast — zero extra
+        // Open-Meteo calls.  This fixes model_unavailable in collection logs
+        // and ensures the prediction uses the correct per-city precipitation
+        // rate instead of a potentially stale cachedCurrentData global.
+        const cur = openMeteoData?.current;
+        const modelCtx = cur ? {
+            weatherCode:   cur.weather_code ?? null,
+            precipProb:    null,   // not available in current endpoint
+            precipitation: cur.precipitation ?? null,
+            cloudCover:    cur.cloud_cover ?? null,
+            temp:          cur.temperature_2m ?? null,
+            dewpoint:      cur.dew_point_2m ?? null,
+            humidity:      cur.relative_humidity_2m ?? null,
+            windSpeed:     cur.wind_speed_10m ?? null,
+            windDir:       cur.wind_direction_10m ?? null,
+            pressure:      cur.pressure_msl ?? null,
+        } : null;
+        const nowSummary = await getNowSummary({
+            lat, lon,
+            country: location.country,
+            locationName: location.name,
+            stateCode: location.stateCode || null,
+            modelContext: modelCtx,
+            modelWMO: cur?.weather_code ?? null,
+        });
+
         // Fill in Tier 2 when ready (often already resolved by now)
-        const [airQualityData, nwsData, modelData, meteostatRaw, nowSummary, nwsObsHistory, stationObs, spcData] = await tier2Promise;
+        const [airQualityData, nwsData, modelData, meteostatRaw, nwsObsHistory, stationObs, spcData] = await tier2Promise;
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
         cachedStationObs = stationObs;
         cachedNowSummary = nowSummary;
         saveNowcastState(nowSummary, lat, lon);
 
+        // Start lightning polling early so GLM data is available ASAP
+        if (typeof startLightning === 'function') startLightning(lat, lon, location.country);
+
         fillTier2Data(openMeteoData, airQualityData, nwsData, location, modelData, recentPrecipData, nowSummary, spcData);
 
-        // Start nowcast polling + lightning WebSocket
-        startNowcastPolling(lat, lon, location.country);
-        if (typeof startLightning === 'function') startLightning(lat, lon);
+        // Start nowcast polling — pass modelCtx so poll-loop records get model data
+        startNowcastPolling(lat, lon, location.country, location.name, location.stateCode || null, modelCtx, cur?.weather_code ?? null);
 
         if (!airQualityData) {
             setTimeout(async () => {
@@ -756,11 +815,47 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 }
 
 // Initialize the dashboard
+// Enrich saved locations missing countryCode/stateCode via reverse geocode (runs once in background)
+async function _enrichLocationCodes() {
+    const missing = savedLocations.filter(loc =>
+        (!loc.countryCode || (loc.countryCode === 'US' && !loc.stateCode)) && loc.lat && loc.lon);
+    if (!missing.length) return;
+    let changed = false;
+    for (const loc of missing) {
+        try {
+            const rev = await reverseGeocodeLocation(loc.lat, loc.lon);
+            if (rev && rev.countryCode) {
+                loc.countryCode = rev.countryCode;
+                loc.stateCode = rev.stateCode || null;
+                if (activeLocation && activeLocation.name === loc.name) {
+                    activeLocation.countryCode = loc.countryCode;
+                    activeLocation.stateCode = loc.stateCode;
+                }
+                changed = true;
+            }
+        } catch (e) { /* silent — non-critical */ }
+    }
+    if (changed) {
+        saveLocations();
+        // Patch visible headers without a full re-render
+        if (activeLocation && activeLocation.countryCode) {
+            const label = locationLabel(activeLocation);
+            document.querySelectorAll('.card-title').forEach(el => {
+                const t = el.textContent;
+                const idx = t.indexOf(' \u2014 ');
+                if (idx !== -1) el.textContent = `${t.substring(0, idx)} \u2014 ${label}`;
+            });
+        }
+    }
+}
+
 function init() {
     console.log(`Weather Command Center v${APP_VERSION}`);
     loadSavedLocations();
     loadNowcastState();
+    _enrichLocationCodes(); // backfill state/country codes for existing saved locations
     renderTabs();
+    startTabRefresh();
 
     if (geoMeActive) {
         // Restore "Me" mode from previous session
@@ -777,7 +872,7 @@ function init() {
         if (activeLocation.lat && activeLocation.lon) {
             fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
         } else {
-            fetchWeatherData();
+            _resolveAndFetch(activeLocation.name);
         }
     } else {
         // Show welcome message for new users
@@ -831,29 +926,30 @@ function init() {
     }
 }
 
-// Wire welcome screen interactive elements
-function wireWelcomeEvents() {
-    let gpsCoords = null;
-    let debounceTimer = null;
-    const searchCache = new Map();
+// ── Welcome screen state (module scope for cleanup on re-invocation) ──
+let _welcomeGpsCoords = null;
+let _welcomeDebounce = null;
+const _welcomeSearchCache = new Map();
 
-    function saveAndFetch(loc) {
-        clearTimeout(debounceTimer);
-        const newLocation = {
-            name: loc.name,
-            displayName: extractDisplayName(loc.name),
-            lat: loc.lat,
-            lon: loc.lon,
-            country: loc.country
-        };
-        savedLocations.push(newLocation);
-        activeLocation = newLocation;
-        saveLocations();
-        renderTabs();
-        fetchWeatherDataDirect(loc.lat, loc.lon, loc);
-    }
+function _welcomeSaveAndFetch(loc) {
+    clearTimeout(_welcomeDebounce);
+    const newLocation = {
+        name: loc.name,
+        displayName: extractDisplayName(loc.name),
+        lat: loc.lat,
+        lon: loc.lon,
+        country: loc.country,
+        countryCode: loc.countryCode || null,
+        stateCode: loc.stateCode || null
+    };
+    savedLocations.push(newLocation);
+    activeLocation = newLocation;
+    saveLocations();
+    renderTabs();
+    fetchWeatherDataDirect(loc.lat, loc.lon, loc);
+}
 
-    // ── GPS ──
+function _handleWelcomeGPS() {
     const gpsBtn = document.getElementById('welcomeGpsBtn');
     const gpsConfirm = document.getElementById('welcomeGpsConfirm');
     const gpsNameInput = document.getElementById('welcomeGpsName');
@@ -870,10 +966,12 @@ function wireWelcomeEvents() {
             async pos => {
                 const lat = parseFloat(pos.coords.latitude.toFixed(6));
                 const lon = parseFloat(pos.coords.longitude.toFixed(6));
-                gpsCoords = { lat, lon, country: null };
+                _welcomeGpsCoords = { lat, lon, country: null, countryCode: null, stateCode: null };
 
                 const rev = await reverseGeocodeLocation(lat, lon);
-                gpsCoords.country = rev ? rev.country : null;
+                _welcomeGpsCoords.country = rev ? rev.country : null;
+                _welcomeGpsCoords.countryCode = rev ? rev.countryCode : null;
+                _welcomeGpsCoords.stateCode = rev ? rev.stateCode : null;
                 gpsNameInput.value = rev ? rev.name : 'My Location';
 
                 gpsBtn.style.display = 'none';
@@ -891,9 +989,9 @@ function wireWelcomeEvents() {
     };
 
     document.getElementById('welcomeGpsAdd').onclick = () => {
-        if (!gpsCoords) return;
+        if (!_welcomeGpsCoords) return;
         const name = gpsNameInput.value.trim() || 'My Location';
-        saveAndFetch({ lat: gpsCoords.lat, lon: gpsCoords.lon, name, country: gpsCoords.country });
+        _welcomeSaveAndFetch({ lat: _welcomeGpsCoords.lat, lon: _welcomeGpsCoords.lon, name, country: _welcomeGpsCoords.country, countryCode: _welcomeGpsCoords.countryCode, stateCode: _welcomeGpsCoords.stateCode });
     };
 
     gpsNameInput.addEventListener('keydown', e => {
@@ -901,14 +999,15 @@ function wireWelcomeEvents() {
     });
 
     document.getElementById('welcomeGpsCancel').onclick = () => {
-        gpsCoords = null;
+        _welcomeGpsCoords = null;
         gpsConfirm.classList.remove('visible');
         gpsBtn.style.display = '';
         gpsBtn.textContent = '📍 Use My Location';
         gpsBtn.disabled = false;
     };
+}
 
-    // ── Search ──
+function _handleWelcomeSearch() {
     const searchInput = document.getElementById('welcomeSearchInput');
     const resultsEl = document.getElementById('welcomeResults');
 
@@ -931,7 +1030,8 @@ function wireWelcomeEvents() {
         resultsEl.querySelectorAll('.alm-result-item').forEach(el => {
             el.onclick = () => {
                 const r = results[parseInt(el.dataset.i)];
-                saveAndFetch({ lat: r.latitude, lon: r.longitude, name: r.name, country: r.country });
+                const rcc = (r.country_code || '').toUpperCase();
+                _welcomeSaveAndFetch({ lat: r.latitude, lon: r.longitude, name: r.name, country: r.country, countryCode: rcc || null, stateCode: rcc === 'US' ? (r.admin1_code || '').replace(/^US-/, '') || null : null });
             };
         });
     }
@@ -941,16 +1041,16 @@ function wireWelcomeEvents() {
         if (!q) { resultsEl.innerHTML = ''; return; }
 
         const key = q.toLowerCase();
-        if (searchCache.has(key)) { renderResults(searchCache.get(key)); return; }
+        if (_welcomeSearchCache.has(key)) { renderResults(_welcomeSearchCache.get(key)); return; }
 
         resultsEl.innerHTML = '<div class="alm-searching">Searching…</div>';
         try {
             const raw = await geocodeLocation(q);
             const list = Array.isArray(raw)
                 ? raw
-                : [{ name: raw.name, latitude: raw.lat, longitude: raw.lon, country: raw.country, admin1: null }];
-            if (searchCache.size >= 30) searchCache.delete(searchCache.keys().next().value);
-            searchCache.set(key, list);
+                : [{ name: raw.name, latitude: raw.lat, longitude: raw.lon, country: raw.country, country_code: raw.countryCode, admin1_code: raw.stateCode ? `US-${raw.stateCode}` : null, admin1: null }];
+            if (_welcomeSearchCache.size >= 30) _welcomeSearchCache.delete(_welcomeSearchCache.keys().next().value);
+            _welcomeSearchCache.set(key, list);
             renderResults(list);
         } catch (_) {
             resultsEl.innerHTML = '<div class="alm-no-results">No locations found</div>';
@@ -958,17 +1058,18 @@ function wireWelcomeEvents() {
     }
 
     searchInput.addEventListener('input', e => {
-        clearTimeout(debounceTimer);
+        clearTimeout(_welcomeDebounce);
         const q = e.target.value;
         if (!q.trim()) { resultsEl.innerHTML = ''; return; }
-        debounceTimer = setTimeout(() => doSearch(q), 350);
+        _welcomeDebounce = setTimeout(() => doSearch(q), 350);
     });
 
     searchInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { clearTimeout(debounceTimer); doSearch(searchInput.value); }
+        if (e.key === 'Enter') { clearTimeout(_welcomeDebounce); doSearch(searchInput.value); }
     });
+}
 
-    // ── Coordinates ──
+function _handleWelcomeCoords() {
     const coordsToggle = document.getElementById('welcomeCoordsToggle');
     const coordsForm = document.getElementById('welcomeCoordsForm');
 
@@ -1012,8 +1113,20 @@ function wireWelcomeEvents() {
             addBtn.disabled = false;
         }
 
-        saveAndFetch({ lat, lon, name, country });
+        _welcomeSaveAndFetch({ lat, lon, name, country });
     };
+}
+
+// Wire welcome screen interactive elements
+function wireWelcomeEvents() {
+    _welcomeGpsCoords = null;
+    clearTimeout(_welcomeDebounce);
+    _welcomeDebounce = null;
+    _welcomeSearchCache.clear();
+
+    _handleWelcomeGPS();
+    _handleWelcomeSearch();
+    _handleWelcomeCoords();
 }
 
 // ===== PWA SETUP =====
@@ -1080,3 +1193,245 @@ if ('serviceWorker' in navigator) {
 
 // Load weather on page load
 init();
+
+// Signal acquisition end when the page is closed or navigated away.
+// sendBeacon fires reliably during unload (unlike fetch).
+window.addEventListener('beforeunload', () => {
+    navigator.sendBeacon('/api/acquisition-end', '{}');
+});
+
+// ── Collection mode (local server only) ─────────────────────────────────────
+
+let _collectActive = false;
+let _collectTimer = null;
+let _collectStatusTimer = null;
+let _collectLastSwitched = null;
+let _collectCities = [];
+let _collectSingleCity = false;
+
+// Phase 1 redesign: uniform sequential rotation. The previous design fanned
+// out to ALL cities every 5 min via _batchScanAll() (parallel Open-Meteo
+// pre-screen) and then dwelled longer on "interesting" cities. That biased
+// sampling toward active weather AND added a per-cycle parallel scan that
+// burned ~12·N requests/hour on top of the dwell traffic. Both pieces are
+// removed: the collector simply walks _collectCities one at a time with a
+// fixed 10-min dwell, giving uniform temporal coverage and a predictable
+// upper bound on Open-Meteo load.
+let _activeIdx = 0;             // index into _collectCities
+const COLLECT_DWELL_MS = 10 * 60 * 1000; // 10 min uniform dwell per city
+
+function _populateCollectSelect() {
+    const sel = document.getElementById('collectCitySelect');
+    if (!sel) return;
+    const prev = sel.value;
+    while (sel.options.length > 1) sel.remove(1); // keep "All Cities"
+    savedLocations.forEach(loc => {
+        const opt = document.createElement('option');
+        opt.value = loc.name;
+        opt.textContent = loc.displayName || loc.name;
+        sel.appendChild(opt);
+    });
+    // Restore previous selection if still valid
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+async function detectLocalServer() {
+    try {
+        const r = await fetch('/api/cities');
+        if (r.ok) {
+            const btn = document.getElementById('collectBtn');
+            const sel = document.getElementById('collectCitySelect');
+            if (btn) btn.style.display = '';
+            if (sel) { sel.style.display = ''; _populateCollectSelect(); }
+        }
+    } catch { /* not running locally — keep button hidden */ }
+}
+detectLocalServer();
+
+function toggleCollection() {
+    _collectActive ? stopCollection() : startCollection();
+}
+
+function startCollection() {
+    const sel = document.getElementById('collectCitySelect');
+    const chosen = sel && sel.value !== 'all' ? sel.value : null;
+    if (chosen) {
+        const loc = savedLocations.find(l => l.name === chosen);
+        _collectCities = loc ? [loc] : [...savedLocations];
+        _collectSingleCity = !!loc;
+    } else {
+        _collectCities = [...savedLocations];
+        _collectSingleCity = false;
+    }
+    if (!_collectCities.length) return;
+    _collectActive = true;
+    _activeIdx = 0;
+    // Phase 1 fix: pause the background tab refresh while collection runs.
+    // The collector itself cycles through every city; the bg fanout just
+    // duplicates that traffic.
+    stopTabRefresh();
+    _updateCollectBtn();
+    if (typeof setNowcastLoggingEnabled === 'function') setNowcastLoggingEnabled(true);
+    _advanceCollection();
+}
+
+function stopCollection() {
+    _collectActive = false;
+    clearTimeout(_collectTimer);
+    clearInterval(_collectStatusTimer);
+    // Phase 1 fix: also kill the background tab refresh. Without this,
+    // _tabRefreshInterval kept hitting Open-Meteo every 5 min for every
+    // saved city long after the user clicked End — the proximate cause
+    // of the "locked out during analysis window" lockouts.
+    stopTabRefresh();
+    _updateCollectBtn();
+    if (typeof setNowcastLoggingEnabled === 'function') setNowcastLoggingEnabled(false);
+    fetch('/api/acquisition-end', { method: 'POST' }).catch(() => {});
+}
+
+async function _advanceCollection() {
+    if (!_collectActive) return;
+
+    // Single-city mode: dwell on the only city, refresh once a minute.
+    if (_collectSingleCity) {
+        const city = _collectCities[0];
+        const liveIdx = savedLocations.findIndex(
+            l => l.name === city.name || (l.lat === city.lat && l.lon === city.lon)
+        );
+        if (liveIdx >= 0) switchLocation(liveIdx);
+        _collectLastSwitched = new Date();
+        _updateCollectStatus();
+        _collectTimer = setTimeout(_advanceCollection, 60_000);
+        return;
+    }
+
+    // Sequential rotation across all collection cities. Uniform dwell.
+    const city = _collectCities[_activeIdx];
+    _activeIdx = (_activeIdx + 1) % _collectCities.length;
+
+    const liveIdx = savedLocations.findIndex(
+        l => l.name === city.name || (l.lat === city.lat && l.lon === city.lon)
+    );
+    if (liveIdx >= 0) switchLocation(liveIdx);
+    _collectLastSwitched = new Date();
+    _updateCollectStatus();
+    _collectTimer = setTimeout(_advanceCollection, COLLECT_DWELL_MS);
+}
+
+function _updateCollectStatus() {
+    const el = document.getElementById('collectStatus');
+    if (!el) return;
+    if (!_collectActive) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    if (_collectSingleCity) {
+        const city = _collectCities[0];
+        const name = city ? (city.displayName || city.name || '?') : '?';
+        const t = _collectLastSwitched
+            ? _collectLastSwitched.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : '--:--';
+        el.textContent = `${name} · ${t}`;
+        return;
+    }
+    if (!_collectCities.length) {
+        el.textContent = '0 cities';
+        return;
+    }
+    const prevIdx = (_activeIdx - 1 + _collectCities.length) % _collectCities.length;
+    const city = _collectCities[prevIdx];
+    const name = city ? (city.displayName || city.name || '?') : '?';
+    const t = _collectLastSwitched
+        ? _collectLastSwitched.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : '--:--';
+    el.textContent = `${name} · ${prevIdx + 1}/${_collectCities.length} · ${t}`;
+}
+
+function _updateCollectBtn() {
+    const btn = document.getElementById('collectBtn');
+    const status = document.getElementById('collectStatus');
+    const health = document.getElementById('healthCheckBtn');
+    if (!btn) return;
+    if (_collectActive) {
+        btn.textContent = '⏹ Stop';
+        btn.classList.add('active');
+        if (health) health.style.display = '';
+        _collectStatusTimer = setInterval(_updateCollectStatus, 5000);
+    } else {
+        btn.textContent = '⏺ Collect';
+        btn.classList.remove('active');
+        if (health) health.style.display = 'none';
+        clearInterval(_collectStatusTimer);
+        if (status) { status.style.display = 'none'; status.textContent = ''; }
+    }
+}
+
+// ── Health check (runs weather_benchmark/health_check.py on the VM) ─────────
+
+async function runHealthCheck() {
+    _showHealthModal('Running health check…', null);
+    try {
+        const r = await fetch('/api/health-check', { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) {
+            _showHealthModal('Health check error', {
+                error: data.error || `HTTP ${r.status}`,
+                stderr: data.stderr,
+                stdout: data.stdout,
+            });
+            return;
+        }
+        _showHealthModal('Collection Health', data);
+    } catch (e) {
+        _showHealthModal('Health check failed', { error: String(e) });
+    }
+}
+
+function _showHealthModal(title, data) {
+    const modal = document.getElementById('alertModal');
+    const titleEl = document.getElementById('alertModalTitle');
+    const body = document.getElementById('alertModalBody');
+    if (!modal || !body) return;
+
+    if (titleEl) titleEl.textContent = '🩺 ' + title;
+
+    if (data === null) {
+        body.innerHTML = '<div style="padding:1rem;font-family:monospace;opacity:0.7">Running…</div>';
+    } else if (data && data.error) {
+        const esc = s => String(s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+        let html = `<div style="padding:1rem;font-family:monospace">
+            <div style="color:#f87171;margin-bottom:0.5rem">${esc(data.error)}</div>`;
+        if (data.stderr) html += `<pre style="font-size:0.7rem;white-space:pre-wrap;opacity:0.7">${esc(data.stderr)}</pre>`;
+        if (data.stdout) html += `<pre style="font-size:0.7rem;white-space:pre-wrap;opacity:0.7">${esc(data.stdout)}</pre>`;
+        html += '</div>';
+        body.innerHTML = html;
+    } else {
+        const statusColor = {
+            ok:   '#4ade80',
+            info: 'var(--text-secondary, #8b95a8)',
+            warn: '#fbbf24',
+            fail: '#f87171',
+        };
+        const statusIcon = { ok: '✓', info: 'i', warn: '⚠', fail: '✗' };
+        const esc = s => String(s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+        const headerColor = statusColor[data.worst_status] || statusColor.info;
+        let html = `<div style="padding:1rem;font-family:monospace;font-size:0.75rem">
+            <div style="margin-bottom:0.75rem;color:${headerColor}">
+                <strong>${esc(data.summary || '')}</strong>
+                &nbsp;·&nbsp; ${data.records || 0} records
+            </div>
+            <div style="font-size:0.65rem;opacity:0.6;margin-bottom:1rem;word-break:break-all">${esc(data.path || '')}</div>`;
+        for (const c of (data.checks || [])) {
+            const color = statusColor[c.status] || statusColor.info;
+            const icon = statusIcon[c.status] || '·';
+            html += `<div style="margin:0.4rem 0;display:flex;gap:0.6rem;align-items:flex-start">
+                <span style="color:${color};min-width:1rem">${icon}</span>
+                <span style="min-width:9rem;color:var(--text-primary, #e8edf5)">${esc(c.name)}</span>
+                <span style="opacity:0.85;flex:1">${esc(c.message)}</span>
+            </div>`;
+        }
+        html += '</div>';
+        body.innerHTML = html;
+    }
+
+    modal.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}

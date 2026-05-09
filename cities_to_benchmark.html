@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nowcast Benchmark Cities</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1923; color: #e0e0e0; padding: 24px; }
+  h1 { color: #4fc3f7; margin-bottom: 6px; font-size: 1.6rem; }
+  .subtitle { color: #90a4ae; margin-bottom: 24px; font-size: 0.95rem; }
+  h2 { color: #81c784; margin: 28px 0 12px; font-size: 1.15rem; border-bottom: 1px solid #263238; padding-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 0.9rem; }
+  th { background: #1a2a35; color: #4fc3f7; text-align: left; padding: 8px 10px; font-weight: 600; }
+  td { padding: 7px 10px; border-bottom: 1px solid #1e2d38; }
+  tr:hover { background: #1a2a35; }
+  .station { font-family: monospace; color: #ffb74d; }
+  .tier { font-weight: 600; }
+  .tier-1 { color: #66bb6a; }
+  .tier-2 { color: #ffa726; }
+  .note { color: #90a4ae; font-size: 0.8rem; }
+  .selected { background: #1b3a2a; }
+  .selected td:first-child::before { content: "\2713 "; color: #66bb6a; }
+  .section-note { color: #b0bec5; font-size: 0.88rem; margin-bottom: 14px; line-height: 1.5; }
+  .legend { background: #1a2a35; border-radius: 6px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.88rem; line-height: 1.6; }
+  .legend strong { color: #4fc3f7; }
+</style>
+</head>
+<body>
+
+<h1>Nowcast Benchmark Cities</h1>
+<p class="subtitle">Candidate cities for continuous data collection and algorithm training</p>
+
+<div class="legend">
+  <strong>Selection Criteria:</strong> Major ASOS station (1-min observations), good NEXRAD radar coverage,
+  climate diversity (different storm types), and high weather activity for training data volume.<br>
+  <strong>Tier 1</strong> = ASOS with 1-min data, excellent radar coverage, high-activity climate.<br>
+  <strong>Tier 2</strong> = ASOS with 1-min data, good radar coverage, moderate activity or niche climate value.<br>
+  <strong>Highlighted rows</strong> = your 7 selected cities (already planned).
+</div>
+
+<h2>Your Selected Cities (7)</h2>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr class="selected"><td>Arden, NC</td><td class="station">KAVL</td><td>35.47</td><td>-82.53</td><td class="tier tier-1">1</td><td>Orographic rain, mountain convection, varied precip types</td></tr>
+  <tr class="selected"><td>Durham, NC</td><td class="station">KRDU</td><td>35.88</td><td>-78.79</td><td class="tier tier-1">1</td><td>Piedmont storms, warm-season convection, tropical remnants</td></tr>
+  <tr class="selected"><td>Bozeman, MT</td><td class="station">KBZN</td><td>45.78</td><td>-111.15</td><td class="tier tier-1">1</td><td>Mountain snow/rain transitions, chinook events, dry climate contrast</td></tr>
+  <tr class="selected"><td>Boston, MA</td><td class="station">KBOS</td><td>42.36</td><td>-71.01</td><td class="tier tier-1">1</td><td>Nor'easters, coastal storms, dense observation network</td></tr>
+  <tr class="selected"><td>Savannah, GA</td><td class="station">KSAV</td><td>32.13</td><td>-81.20</td><td class="tier tier-1">1</td><td>Sea breeze convection, subtropical, summer afternoon storms</td></tr>
+  <tr class="selected"><td>Burlington, VT</td><td class="station">KBTV</td><td>44.47</td><td>-73.15</td><td class="tier tier-1">1</td><td>Lake-effect precip, winter storms, ice/snow/rain transitions</td></tr>
+  <tr class="selected"><td>Sarasota, FL</td><td class="station">KSRQ</td><td>27.40</td><td>-82.55</td><td class="tier tier-1">1</td><td>Daily summer thunderstorms (best training city May-Sep), tropical</td></tr>
+</table>
+
+<h2>Southeast / Gulf Coast (High Convective Activity)</h2>
+<p class="section-note">Highest storm frequency in the US. Daily summer thunderstorms, tropical systems, sea breeze convergence.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>Tampa, FL</td><td class="station">KTPA</td><td>27.98</td><td>-82.53</td><td class="tier tier-1">1</td><td>Lightning capital of US, intense summer convection</td></tr>
+  <tr><td>Jacksonville, FL</td><td class="station">KJAX</td><td>30.49</td><td>-81.69</td><td class="tier tier-1">1</td><td>Sea breeze front collisions, frequent summer storms</td></tr>
+  <tr><td>New Orleans, LA</td><td class="station">KMSY</td><td>29.99</td><td>-90.26</td><td class="tier tier-1">1</td><td>Gulf moisture, tropical systems, intense rain rates</td></tr>
+  <tr><td>Atlanta, GA</td><td class="station">KATL</td><td>33.64</td><td>-84.43</td><td class="tier tier-1">1</td><td>Major hub, severe storms, diverse precip year-round</td></tr>
+  <tr><td>Charleston, SC</td><td class="station">KCHS</td><td>32.90</td><td>-80.04</td><td class="tier tier-1">1</td><td>Coastal, tropical influence, sea breeze storms</td></tr>
+  <tr><td>Mobile, AL</td><td class="station">KMOB</td><td>30.69</td><td>-88.25</td><td class="tier tier-1">1</td><td>Wettest city in US, Gulf storms, high rain volume</td></tr>
+  <tr><td>Houston, TX</td><td class="station">KIAH</td><td>29.98</td><td>-95.34</td><td class="tier tier-1">1</td><td>Extreme rain events, Gulf moisture, flash flood capital</td></tr>
+</table>
+
+<h2>Great Plains / Tornado Alley (Severe Storms)</h2>
+<p class="section-note">Supercells, squall lines, dramatic onset/cessation. Best for testing rapid transitions.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>Oklahoma City, OK</td><td class="station">KOKC</td><td>35.39</td><td>-97.60</td><td class="tier tier-1">1</td><td>Severe storm capital, supercells, sharp onset/offset</td></tr>
+  <tr><td>Dallas, TX</td><td class="station">KDFW</td><td>32.90</td><td>-97.04</td><td class="tier tier-1">1</td><td>Dryline storms, severe hail, dramatic frontal passages</td></tr>
+  <tr><td>Wichita, KS</td><td class="station">KICT</td><td>37.65</td><td>-97.43</td><td class="tier tier-1">1</td><td>Center of tornado alley, frequent severe weather events</td></tr>
+  <tr><td>Kansas City, MO</td><td class="station">KMCI</td><td>39.30</td><td>-94.71</td><td class="tier tier-2">2</td><td>Frontal boundary storms, MCS events, squall lines</td></tr>
+  <tr><td>Minneapolis, MN</td><td class="station">KMSP</td><td>44.88</td><td>-93.23</td><td class="tier tier-1">1</td><td>Summer severe, winter blizzards, rain/snow transitions</td></tr>
+</table>
+
+<h2>Northeast / Mid-Atlantic (Complex Coastal Storms)</h2>
+<p class="section-note">Nor'easters, coastal lows, rain/snow lines. Good for testing mixed precip and slow-moving systems.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>New York (JFK), NY</td><td class="station">KJFK</td><td>40.64</td><td>-73.78</td><td class="tier tier-1">1</td><td>Coastal storms, highest-density observation area in US</td></tr>
+  <tr><td>Philadelphia, PA</td><td class="station">KPHL</td><td>39.87</td><td>-75.23</td><td class="tier tier-1">1</td><td>Rain/snow boundary, nor'easters, summer convection</td></tr>
+  <tr><td>Pittsburgh, PA</td><td class="station">KPIT</td><td>40.49</td><td>-80.23</td><td class="tier tier-2">2</td><td>Appalachian orographic effects, frequent overcast/drizzle</td></tr>
+  <tr><td>Portland, ME</td><td class="station">KPWM</td><td>43.65</td><td>-70.31</td><td class="tier tier-2">2</td><td>Nor'easters, coastal fog, winter storm testing</td></tr>
+</table>
+
+<h2>Great Lakes (Lake-Effect)</h2>
+<p class="section-note">Lake-effect snow/rain bands, highly localized. Tests the system's spatial resolution limits.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>Buffalo, NY</td><td class="station">KBUF</td><td>42.94</td><td>-78.74</td><td class="tier tier-1">1</td><td>Lake-effect capital, extreme localized precip bands</td></tr>
+  <tr><td>Cleveland, OH</td><td class="station">KCLE</td><td>41.41</td><td>-81.85</td><td class="tier tier-1">1</td><td>Lake Erie effect, rapid onset snow/rain squalls</td></tr>
+  <tr><td>Chicago, IL</td><td class="station">KORD</td><td>41.98</td><td>-87.90</td><td class="tier tier-1">1</td><td>Lake Michigan effect, frontal storms, dense obs network</td></tr>
+</table>
+
+<h2>Mountain / West (Terrain-Driven Weather)</h2>
+<p class="section-note">Orographic lift, monsoon season, dry vs wet regime shifts. Tests algorithm in low-moisture environments.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>Denver, CO</td><td class="station">KDEN</td><td>39.86</td><td>-104.67</td><td class="tier tier-1">1</td><td>Upslope storms, hail capital, rapid weather changes</td></tr>
+  <tr><td>Salt Lake City, UT</td><td class="station">KSLC</td><td>40.79</td><td>-111.97</td><td class="tier tier-2">2</td><td>Lake-effect snow, inversion breakdowns, diverse precip</td></tr>
+  <tr><td>Phoenix, AZ</td><td class="station">KPHX</td><td>33.43</td><td>-112.01</td><td class="tier tier-2">2</td><td>Monsoon thunderstorms (Jul-Sep), haboobs, dry rest of year</td></tr>
+  <tr><td>Albuquerque, NM</td><td class="station">KABQ</td><td>35.04</td><td>-106.62</td><td class="tier tier-2">2</td><td>Monsoon convection, dry-to-wet transitions, high altitude</td></tr>
+</table>
+
+<h2>Pacific Northwest (Persistent Rain)</h2>
+<p class="section-note">Extended rain events, drizzle vs rain distinction. Tests light-precip sensitivity and cessation timing.</p>
+<table>
+  <tr><th>City</th><th>Station</th><th>Lat</th><th>Lon</th><th>Tier</th><th>Why It's Valuable</th></tr>
+  <tr><td>Seattle, WA</td><td class="station">KSEA</td><td>47.45</td><td>-122.31</td><td class="tier tier-1">1</td><td>Atmospheric rivers, persistent drizzle, light rain edge cases</td></tr>
+  <tr><td>Portland, OR</td><td class="station">KPDX</td><td>45.59</td><td>-122.60</td><td class="tier tier-1">1</td><td>Similar to Seattle, convergence zone storms, ice events</td></tr>
+</table>
+
+<h2>Recommended Additions to Reach 25-30 Cities</h2>
+<p class="section-note">
+  Prioritized by training data value. Start with your 7 selected cities, then add in this order based on
+  which climate gaps you want to fill first. Each batch adds distinct failure modes for the algorithm.
+</p>
+<table>
+  <tr><th>Priority</th><th>Cities to Add</th><th>What They Test</th></tr>
+  <tr><td>Batch 1 (8-12)</td><td>Tampa, Oklahoma City, Denver, Buffalo, Seattle</td><td>Lightning storms, severe onset, mountain convection, lake-effect, persistent drizzle</td></tr>
+  <tr><td>Batch 2 (13-18)</td><td>Houston, Atlanta, New York, Chicago, Minneapolis, New Orleans</td><td>Flash floods, major hubs, lake effect, winter severe, Gulf moisture</td></tr>
+  <tr><td>Batch 3 (19-25)</td><td>Dallas, Cleveland, Philadelphia, Phoenix, Portland OR, Charleston, Mobile</td><td>Dryline storms, rain/snow line, monsoon, atmospheric rivers, coastal, extreme rain volume</td></tr>
+  <tr><td>Batch 4 (26-30)</td><td>Wichita, Kansas City, Salt Lake City, Pittsburgh, Albuquerque</td><td>Core tornado alley, lake-effect snow, Appalachian, monsoon, niche climates</td></tr>
+</table>
+
+<h2>Notes</h2>
+<ul style="margin: 12px 0 0 20px; line-height: 1.8; font-size: 0.88rem; color: #b0bec5;">
+  <li>All stations listed are major ASOS sites with 1-minute automated observations available through IEM.</li>
+  <li>IEM ASOS data has a 1-4 hour lag; hourly reports only capture precip in 1-hour buckets.</li>
+  <li>Special observations (speci) improve timing resolution but the backtest currently skips them (report_type=1 only).</li>
+  <li>For 25+ cities, the collection scheduler's forecast-based filtering will keep API usage low by skipping clear-sky cities.</li>
+  <li>Summer (May-Sep): Southeast and Plains cities will dominate data volume. Winter (Nov-Mar): Northeast and Lakes cities will.</li>
+</ul>
+
+</body>
+</html>

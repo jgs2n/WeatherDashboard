@@ -285,11 +285,14 @@ async function showLocationPicker(results) {
 
 function selectLocation(index) {
     const result = window.locationPickerResults[index];
+    const cc = (result.country_code || '').toUpperCase();
     const location = {
         lat: result.latitude,
         lon: result.longitude,
         name: result.name,
-        country: result.country
+        country: result.country,
+        countryCode: cc || null,
+        stateCode: cc === 'US' ? (result.admin1_code || '').replace(/^US-/, '') || null : null
     };
 
     const resolve = window.locationPickerResolve;

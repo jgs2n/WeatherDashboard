@@ -15,7 +15,7 @@ async function fetchRecentPrecip(lat, lon) {
     const apiKey = localStorage.getItem('meteostatApiKey');
     if (!apiKey) return null;
 
-    const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
+    const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
     if (_rpCache.key === cacheKey && _rpCache.ts && (Date.now() - _rpCache.ts) < _RP_TTL) {
         return _rpCache.data;
     }

@@ -7,28 +7,21 @@
 
 // ── Caches (recentPrecip.js pattern) ─────────────────────────────────────────
 
-let _stationCache   = { data: null, ts: null, key: null };
-let _stationPending = null;
-const _STATION_TTL  = 30 * 60 * 1000; // 30 min — station list rarely changes
+let _stationCache        = { data: null, ts: null, key: null };
+const _stationPendingByKey = new Map();
+const _STATION_TTL       = 30 * 60 * 1000; // 30 min — station list rarely changes
 
-let _obsCache   = { data: null, ts: null, key: null };
-let _obsPending = null;
-const _OBS_TTL  = 3 * 60 * 1000; // 3 min
+let _obsCache        = { data: null, ts: null, key: null };
+const _obsPendingByKey = new Map();
+const _OBS_TTL       = 3 * 60 * 1000; // 3 min
 
-let _obsHistCache = { data: null, ts: null, key: null };
-const _OBS_HIST_TTL = 15 * 60 * 1000; // 15 min
+let _obsHistCache         = { data: null, ts: null, key: null };
+const _obsHistPendingByKey = new Map();
+const _OBS_HIST_TTL       = 15 * 60 * 1000; // 15 min
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function _haversineMi(lat1, lon1, lat2, lon2) {
-    const R = 3958.8; // Earth radius in miles
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+// haversineDistanceMi() is provided by src/utils/geo.js
 
 // METAR/ASOS/AWOS stations have 4-char ICAO ids starting with K (CONUS)
 // or P (Pacific), or C (Canada near border). Prefer these over COOP/other.
@@ -39,14 +32,14 @@ function _isMetarStation(id) {
 // ── Fetch nearest station ────────────────────────────────────────────────────
 
 async function _fetchNearestStation(lat, lon) {
-    const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
+    const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
     if (_stationCache.key === cacheKey && _stationCache.ts &&
         (Date.now() - _stationCache.ts) < _STATION_TTL) {
         return _stationCache.data;
     }
-    if (_stationPending) return _stationPending;
+    if (_stationPendingByKey.has(cacheKey)) return _stationPendingByKey.get(cacheKey);
 
-    _stationPending = (async () => {
+    const _sp = (async () => {
         try {
             // Step 1: get observation stations URL from NWS points
             const ptRes = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, {
@@ -77,7 +70,7 @@ async function _fetchNearestStation(lat, lon) {
                 const coords = f.geometry && f.geometry.coordinates; // [lon, lat]
                 if (!coords) continue;
                 const id = props.stationIdentifier || '';
-                const dist = _haversineMi(lat, lon, coords[1], coords[0]);
+                const dist = haversineDistanceMi(lat, lon, coords[1], coords[0]);
 
                 if (dist < bestDist) {
                     bestDist = dist;
@@ -97,10 +90,10 @@ async function _fetchNearestStation(lat, lon) {
             console.warn('[Observations] Station lookup failed:', err.message);
             return null;
         }
-    })();
+    })().finally(() => { _stationPendingByKey.delete(cacheKey); });
 
-    _stationPending = _stationPending.finally(() => { _stationPending = null; });
-    return _stationPending;
+    _stationPendingByKey.set(cacheKey, _sp);
+    return _sp;
 }
 
 // ── Fetch latest observation ─────────────────────────────────────────────────
@@ -145,14 +138,14 @@ async function _fetchLatestObs(stationId) {
  * @returns {Promise<{stationId, stationName, distance_mi, obs:{...}}|null>}
  */
 async function fetchStationObservation(lat, lon) {
-    const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
+    const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
     if (_obsCache.key === cacheKey && _obsCache.ts &&
         (Date.now() - _obsCache.ts) < _OBS_TTL) {
         return _obsCache.data;
     }
-    if (_obsPending) return _obsPending;
+    if (_obsPendingByKey.has(cacheKey)) return _obsPendingByKey.get(cacheKey);
 
-    _obsPending = (async () => {
+    const _op = (async () => {
         try {
             const station = await _fetchNearestStation(lat, lon);
             if (!station) return null;
@@ -172,10 +165,10 @@ async function fetchStationObservation(lat, lon) {
             console.warn('[Observations] fetchStationObservation failed:', err.message);
             return null;
         }
-    })();
+    })().finally(() => { _obsPendingByKey.delete(cacheKey); });
 
-    _obsPending = _obsPending.finally(() => { _obsPending = null; });
-    return _obsPending;
+    _obsPendingByKey.set(cacheKey, _op);
+    return _op;
 }
 
 // ── Fetch observation history via IEM ASOS (for recent precip) ────────────────
@@ -188,12 +181,14 @@ async function fetchStationObservation(lat, lon) {
 // present is always true for returned rows (missing rows = no entry, not null).
 
 async function fetchObservationHistory(lat, lon, hoursBack = 49) {
-    const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
+    const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
     if (_obsHistCache.key === cacheKey && _obsHistCache.ts &&
         (Date.now() - _obsHistCache.ts) < _OBS_HIST_TTL) {
         return _obsHistCache.data;
     }
+    if (_obsHistPendingByKey.has(cacheKey)) return _obsHistPendingByKey.get(cacheKey);
 
+    const _ohp = (async () => {
     try {
         const station = await _fetchNearestStation(lat, lon);
         if (!station) return null;
@@ -253,4 +248,8 @@ async function fetchObservationHistory(lat, lon, hoursBack = 49) {
         console.warn('[Observations] fetchObservationHistory failed:', err.message);
         return null;
     }
+    })().finally(() => { _obsHistPendingByKey.delete(cacheKey); });
+
+    _obsHistPendingByKey.set(cacheKey, _ohp);
+    return _ohp;
 }

@@ -36,7 +36,7 @@ A lightweight weather dashboard (vanilla JS, no frameworks, no build step). Supp
 - `airQuality.js` — AQI fetch + normalize
 - `modelComparison.js` — model spread fetch + normalize
 - `geocode.js` — location search + normalize
-- `lightning.js` — Blitzortung WebSocket, rolling 30-min strike buffer, `summarizeLightningBuffer()`
+- `lightning.js` — GOES GLM S3 direct fetch (NetCDF/jsfive), rolling 20-min flash buffer, `summarizeLightningBuffer()`, `fetchGlmFlashes()` adapter boundary
 - `nowcast.js` — orchestrator: sky state, precip now, precip trend, lightning state (merged)
 - `radarSampler.js` — radar tile loading, pixel sampling, hysteresis, motion vectors
 - `observations.js` — NWS station observation fetch + parsing
@@ -63,27 +63,36 @@ A lightweight weather dashboard (vanilla JS, no frameworks, no build step). Supp
 
 ## Lightning / nowcast rules
 
-Lightning data comes from Blitzortung WebSocket (global). The nowcast merges three sources:
+Lightning data comes from NOAA GOES GLM (Americas only, ~10 km resolution). The nowcast merges three sources:
 
-1. **Blitzortung strikes** (primary truth) — real-time, distance-based classification
+1. **GOES GLM flashes** (primary truth) — poll-based, distance-band classification
 2. **METAR TS codes** (fallback / confirmation) — explicit thunderstorm only
 3. **Radar dBZ** (supporting context) — **never** promotes to thunderstorm alone
 
-**State classification** (from strike buffer):
-- `active` — strikes ≤ 5 mi in last 15 min
-- `nearby` — strikes 5–10 mi in last 15 min
-- `approaching` — strikes 10–20 mi in last 30 min
-- `none` — no strikes within 20 mi
+GLM is a storm-scale flash detector, NOT a precise strike locator. UI language must be honest about this.
+
+**State classification** (from flash buffer, broader bands than former Blitzortung):
+- `active` — flashes ≤ 10 mi in last 10 min
+- `nearby` — flashes ≤ 20 mi in last 15 min
+- `approaching` — flashes ≤ 40 mi in last 20 min
+- `none` — no flashes within 40 mi
 
 **Condition override ladder** (do not change this without discussion):
 - `active` can promote precip to **Thunderstorm**
 - `nearby` can modify to **Rain — thunder nearby**
 - `approaching` — secondary line only, **never** changes primary condition
 - Radar dBZ ≥ 45 alone → **Heavy Rain**, not thunderstorm
+- Dry background + `active` requires ≥ 2 close flashes for "Thunder nearby" (conservative for GLM)
 
-**Key files**: `src/services/lightning.js` (WebSocket + buffer), `src/services/nowcast.js` (`_computeLightningState` merge), `src/ui/renderDashboard.js` (`_lightningLineText`, `_applyLightningConditionOverride`)
+**Key files**: `src/services/lightning.js` (GLM polling + buffer), `src/services/nowcast.js` (`_computeLightningState` merge), `src/ui/renderDashboard.js` (`_lightningLineText`, `_applyLightningConditionOverride`)
 
-**Degradation**: if WebSocket disconnects, buffer drains over 30 min, then METAR fallback. See `docs/lightning-nowcast-plan.md` for full spec.
+**Adapter boundary**: `fetchGlmFlashes()` in lightning.js is the sole data ingestion point. Default reads GOES GLM LCFA NetCDF files directly from NOAA S3 (`noaa-goes19` / `noaa-goes18` buckets). Uses jsfive (176KB, pure JS HDF5 reader) loaded lazily on first lightning poll. Set `LIGHTNING_CFG.GLM_ENDPOINT` to swap in a proxy. Set `LIGHTNING_CFG.S3_SAT_SELECT` to `'east'`/`'west'` to force a specific satellite (default `'auto'` uses longitude threshold).
+
+**External dependency**: `lib/jsfive.esm.js` — jsfive 0.4.0 from NIST. Pure JavaScript HDF5 reader. 176KB vendored locally. No WASM, no CDN runtime dependency. Lazy-loaded only when lightning polling starts.
+
+**Coverage**: Americas only (~52N–52S). Outside coverage → METAR fallback (US) or no lightning source.
+
+**Degradation**: if S3 or GLM is unavailable, buffer drains over 20 min, then METAR fallback. See `docs/nowcast-rules.txt` for full spec.
 
 ---
 

@@ -23,10 +23,10 @@ const WEATHER_CODES = {
     77: { desc: 'Snow grains',            icon: 'snow' },
     80: { desc: 'Slight rain showers',    icon: 'drizzle' },
     81: { desc: 'Moderate rain showers',  icon: 'rain' },
-    82: { desc: 'Violent rain showers',   icon: 'thunderstorms-day-rain', iconNight: 'thunderstorms-night-rain' },
+    82: { desc: 'Violent rain showers',   icon: 'thunderstorms-rain' },
     85: { desc: 'Slight snow showers',    icon: 'snow' },
     86: { desc: 'Heavy snow showers',     icon: 'snow' },
-    95: { desc: 'Thunderstorm',           icon: 'thunderstorms-day-rain', iconNight: 'thunderstorms-night-rain' },
+    95: { desc: 'Thunderstorm',           icon: 'thunderstorms-rain' },
     96: { desc: 'Thunderstorm with hail', icon: 'hail' },
     99: { desc: 'Thunderstorm with heavy hail', icon: 'hail' }
 };
@@ -37,7 +37,6 @@ const _NIGHT_MAP = {
     'partly-cloudy-day': 'partly-cloudy-night',
     'overcast-day': 'overcast-night',
     'fog-day': 'fog-night',
-    'thunderstorms-day-rain': 'thunderstorms-night-rain'
 };
 
 // Look up a WMO weather code and return { desc, icon }.

@@ -9,7 +9,7 @@ let cachedSPCOutlook = null;
 // ─── Radar / Maps section ───────────────────────────────────────────────────
 
 function cacheLocationTemp(locationName, temp, weatherCode) {
-    locationTemps[locationName] = { temp: Math.round(temp), code: weatherCode };
+    locationTemps[locationName] = { ...locationTemps[locationName], temp: Math.round(temp), code: weatherCode };
     renderTabs();
 }
 
@@ -27,7 +27,7 @@ function getWindyUrl(view, lat, lon) {
     const height = 1000;
     const detail = showForecastTimeline ? 'true' : '';
     const baseUrl = `https://embed.windy.com/embed2.html?lat=${lat}&lon=${lon}&detailLat=${lat}&detailLon=${lon}&width=650&height=${height}&zoom=9&level=surface`;
-    const common = `&menu=&message=&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=${detail}&metricWind=mph&metricTemp=%C2%B0F&radarRange=-1`;
+    const common = `&message=&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=${detail}&metricWind=mph&metricTemp=%C2%B0F&radarRange=-1`;
 
     const overlays = {
         radar: '&overlay=radar&product=radar',
@@ -71,7 +71,7 @@ function renderRadarSection(location) {
 
     radarCard.innerHTML = `
         <div class="card-header">
-            <div class="card-title">WEATHER MAPS — ${extractDisplayName(location.name)}</div>
+            <div class="card-title">WEATHER MAPS — ${locationLabel(location)}</div>
             <div class="source-badge">Windy</div>
         </div>
         <div class="radar-tabs">
@@ -98,27 +98,26 @@ function renderRadarSection(location) {
 
 // ─── Lightning line helpers ──────────────────────────────────────────────────
 // Used by both renderCurrentCard (initial HTML) and updateNowcastDisplay (in-place).
+// Wording is intentionally honest for GLM (~10 km resolution) — avoids implying
+// precise strike localization.
 
 function _lightningLineText(ls) {
     if (!ls || ls.state === 'none') return null;
 
-    // METAR-only fallback wording (lightning WS unavailable)
+    // METAR-only fallback wording (no GLM data available)
     if (ls.source === 'metar-fallback') return '\u26A1 Thunder reported nearby';
 
     if (ls.state === 'active') {
-        if (ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
-            const d = Math.max(1, Math.round(ls.nearestStrikeMi));
-            return `\u26A1 Lightning within ${d} mi`;
+        // Dense close flashes → stronger phrasing
+        if (ls.flashCounts && ls.flashCounts.within10mi >= 3) {
+            return '\u26A1 Frequent lightning nearby';
         }
-        return '\u26A1 Thunder nearby';
+        return '\u26A1 Lightning nearby';
     }
-    if (ls.state === 'nearby') return '\u26A1 Thunder nearby';
+    if (ls.state === 'nearby') return '\u26A1 Nearby lightning detected';
     if (ls.state === 'approaching') {
-        // Motion-aware: "Storm approaching" vs "Distant lightning detected"
-        if ((ls.nearestStrikeMi != null && ls.nearestStrikeMi > 15) || ls.confidence === 'low') {
-            return '\u26A1 Distant lightning detected';
-        }
-        if (ls._isApproaching) return '\u26A1 Storm approaching';
+        // Motion-aware: "Storm with lightning approaching" vs "Distant lightning detected"
+        if (ls._isApproaching) return '\u26A1 Storm with lightning approaching';
         return '\u26A1 Distant lightning detected';
     }
     return null;
@@ -127,22 +126,25 @@ function _lightningLineText(ls) {
 // Apply lightning state to primary condition text.
 // active can promote to Thunderstorm; nearby can modify to "X — thunder nearby";
 // approaching never changes primary condition.
+// GLM note: dry-background "Thunder nearby" requires strong close-in evidence
+// (multiple flashes within 10 mi) since GLM is ~10 km resolution.
 function _applyLightningConditionOverride(displayCondition, precipPhenomenon, ls) {
     if (!ls || ls.state === 'none' || ls.state === 'approaching') return displayCondition;
     if (precipPhenomenon === 'thunderstorm') return displayCondition; // already correct
 
     if (ls.state === 'active') {
         if (precipPhenomenon === 'heavy rain' || precipPhenomenon === 'rain') {
-            return { desc: 'Thunderstorm', icon: 'thunderstorms-day-rain' };
+            return { desc: 'Thunderstorm', icon: 'thunderstorms-rain' };
         }
         if (precipPhenomenon === 'drizzle') {
-            return { desc: 'Rain \u2014 thunder nearby', icon: 'thunderstorms-day-rain' };
+            return { desc: 'Rain \u2014 thunder nearby', icon: 'thunderstorms-rain' };
         }
         if (precipPhenomenon === 'snow') {
             return { desc: 'Snow \u2014 thunder nearby', icon: 'snow' };
         }
-        if (precipPhenomenon === 'dry' && ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
-            return { desc: 'Thunder nearby', icon: 'thunderstorms-day-rain' };
+        // Dry background: require strong close-in evidence (≥2 flashes within 10 mi)
+        if (precipPhenomenon === 'dry' && ls.flashCounts && ls.flashCounts.within10mi >= 2) {
+            return { desc: 'Thunder nearby', icon: 'thunderstorms-rain' };
         }
     }
 
@@ -157,6 +159,13 @@ function _applyLightningConditionOverride(displayCondition, precipPhenomenon, ls
 
     return displayCondition;
 }
+
+// ─── Synthesized Nowcast Display Composition ─────────────────────────────────
+// These functions consume the NowcastState produced by deriveNowcastState()
+// and produce natural-language display output with no source names in user text.
+// Nowcast display functions (_pickNowcastLabel, _pickEvidenceLine, _buildRationale,
+// _isEscalation, _applyDisplayDamping, resetDisplayMemory) are in
+// src/services/nowcastDisplay.js.
 
 // ─── Sub-renderers ───────────────────────────────────────────────────────────
 
@@ -187,52 +196,30 @@ function updateAQITile(airQuality) {
 
 // Current conditions card — returns HTML string, writes cachedAlerts, cachedRecentPrecip
 function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary) {
+    // Reset display damping on every full re-render (location switch or refresh).
+    // Without this, lastLabel from a previous location bleeds into the new one,
+    // causing stale thunderstorm labels to appear over unrelated conditions.
+    resetDisplayMemory();
+
     const current = openMeteo.current;
     const weatherInfo = getWeatherInfo(current.weather_code);
 
-    // Determine condition to display.
-    // Priority: active precipitation (precipStateNow) → sky state (skyState) → model WMO fallback
-    let displayCondition, conditionSubtitle;
-    const _isWet = nowSummary && nowSummary.precipStateNow && nowSummary.precipStateNow.phenomenon !== 'dry';
-    const _sky   = nowSummary && nowSummary.skyState;
-    const _trend = nowSummary && nowSummary.precipTrend60m;
+    // Determine condition via synthesized nowcast state
+    let displayCondition, conditionSubtitle, _rationale;
+    const _ns = nowSummary && nowSummary.nowcastState;
 
-    if (_isWet) {
-        const ps = nowSummary.precipStateNow;
-        displayCondition = { desc: ps.desc, icon: ps.icon };
-        const ageMins = metarAgeMinutes(ps.observedAt);
-        conditionSubtitle = ageMins < 1 ? 'just now' : `${ageMins}m ago`;
-    } else if (_sky) {
-        displayCondition = { desc: _sky.desc, icon: _sky.icon };
-        const ageMins = metarAgeMinutes(_sky.observedAt);
-        conditionSubtitle = _sky.observedAt ? (ageMins < 1 ? 'just now' : `${ageMins}m ago`) : '';
+    const _isDay = current.is_day === 1;
+
+    if (_ns) {
+        displayCondition = _pickNowcastLabel(_ns);
+        displayCondition.icon = resolveNightIcon(displayCondition.icon, _isDay);
+        conditionSubtitle = _pickEvidenceLine(_ns);
+        _rationale = _buildRationale(_ns);
     } else {
-        displayCondition = weatherInfo;
+        // No nowcast data yet (Tier 1 render) — leave icon and label blank until nowcast resolves
+        displayCondition = { desc: '', icon: '' };
         conditionSubtitle = '';
-    }
-
-    // Lightning condition override — active/nearby can promote primary condition text
-    const _ls = nowSummary && nowSummary.lightningState;
-    const _precipPhenomenon = nowSummary && nowSummary.precipStateNow
-        ? nowSummary.precipStateNow.phenomenon : 'dry';
-    const _preOverrideDesc = displayCondition.desc;
-    displayCondition = _applyLightningConditionOverride(displayCondition, _precipPhenomenon, _ls);
-
-    // Build icon rationale — explains why this icon was chosen
-    let _rationale = '';
-    if (_isWet) {
-        const ps = nowSummary.precipStateNow;
-        const dbzNote = ps.source === 'NEXRAD' || ps.source === 'RainViewer'
-            ? ` (${Math.round(ps.confidence * 100)}% confidence)`
-            : '';
-        _rationale = `${ps.source} detecting ${ps.desc.toLowerCase()}${dbzNote}.`;
-    } else if (_sky) {
-        _rationale = `${_sky.source} observing ${_sky.desc.toLowerCase()}.`;
-    } else {
         _rationale = `Model forecast (WMO ${current.weather_code}): ${weatherInfo.desc}.`;
-    }
-    if (displayCondition.desc !== _preOverrideDesc && _ls) {
-        _rationale += ` Lightning ${_ls.state} (${_ls.source}) promoted to ${displayCondition.desc}.`;
     }
 
     // Rain timing and lightning are now rendered in the blue hazard lane
@@ -406,56 +393,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
 
 // 10-day forecast grid — returns HTML string, writes forecastDays global
 function renderForecastGrid(daily, derivedIcons, derivedNightIcons, nws, modelComparison, locLabel) {
-    // Build model confidence spread for each day
-    const modelSpread = [];
-    if (modelComparison && modelComparison.daily) {
-        const d = modelComparison.daily;
-        const maxKeys = Object.keys(d).filter(k => k.startsWith('temperature_2m_max_'));
-        const minKeys = Object.keys(d).filter(k => k.startsWith('temperature_2m_min_'));
-
-        const modelLabels = {};
-        maxKeys.forEach(k => {
-            const suffix = k.replace('temperature_2m_max_', '');
-            if (suffix.includes('gfs')) modelLabels[suffix] = 'GFS';
-            else if (suffix.includes('ecmwf')) modelLabels[suffix] = 'ECMWF';
-            else modelLabels[suffix] = suffix.toUpperCase();
-        });
-
-        if (maxKeys.length >= 2 && minKeys.length >= 2) {
-            const days = d.time ? d.time.length : 0;
-            for (let j = 0; j < days; j++) {
-                const highs = maxKeys.map(k => d[k][j]).filter(v => v != null);
-                const lows = minKeys.map(k => d[k][j]).filter(v => v != null);
-
-                if (highs.length >= 2 && lows.length >= 2) {
-                    const highSpread = Math.abs(Math.max(...highs) - Math.min(...highs));
-                    const lowSpread = Math.abs(Math.max(...lows) - Math.min(...lows));
-
-                    const models = maxKeys.map((k, mi) => {
-                        const suffix = k.replace('temperature_2m_max_', '');
-                        const minKey = minKeys[mi];
-                        return {
-                            name: modelLabels[suffix] || suffix,
-                            high: d[k][j] != null ? Math.round(d[k][j]) : null,
-                            low: minKey && d[minKey][j] != null ? Math.round(d[minKey][j]) : null
-                        };
-                    }).filter(m => m.high != null && m.low != null);
-
-                    modelSpread.push({
-                        highMin: Math.round(Math.min(...highs)),
-                        highMax: Math.round(Math.max(...highs)),
-                        lowMin: Math.round(Math.min(...lows)),
-                        lowMax: Math.round(Math.max(...lows)),
-                        highSpread: Math.round(highSpread),
-                        lowSpread: Math.round(lowSpread),
-                        models
-                    });
-                } else {
-                    modelSpread.push(null);
-                }
-            }
-        }
-    }
+    const modelSpread = computeModelSpread(modelComparison);
 
     forecastDays = [];
     // Skip any past days Open-Meteo returns due to past_days=2 in the API call
@@ -678,7 +616,7 @@ function lazyLoadRadar(location) {
 
     radarCard.innerHTML = `
         <div class="card-header">
-            <div class="card-title">WEATHER MAPS — ${extractDisplayName(location.name)}</div>
+            <div class="card-title">WEATHER MAPS — ${locationLabel(location)}</div>
             <div class="source-badge">Windy</div>
         </div>
         <div class="skeleton-block skeleton-map"></div>
@@ -815,12 +753,11 @@ function _deriveBlueLaneState(nowSummary) {
     const isWet = ps && ps.phenomenon !== 'dry';
     const hasTrend = trend && trend.summary;
 
-    // Lightning active within 5mi
-    if (ls && ls.state === 'active' && ls.nearestStrikeMi != null && ls.nearestStrikeMi <= 5) {
-        const d = Math.max(1, Math.round(ls.nearestStrikeMi));
-        return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: `Within ${d} mi` };
+    // Lightning active within 10mi (GLM: broader threshold than point-strike)
+    if (ls && ls.state === 'active' && ls.nearestFlashMi != null && ls.nearestFlashMi <= 10) {
+        return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: '' };
     }
-    // Lightning active or nearby (>5mi)
+    // Lightning active or nearby (>10mi)
     if (ls && (ls.state === 'active' || ls.state === 'nearby')) {
         const sec = hasTrend ? trend.summary : '';
         return { cls: 'storm-nearby', status: 'Storm nearby', secondary: sec };
@@ -1033,7 +970,7 @@ function updateRecentPrecipTile(recentPrecip) {
 
 function renderWeatherDashboard(openMeteo, airQuality, nws, location, modelComparison, recentPrecip, nowSummary) {
     const container = document.getElementById('weatherContainer');
-    const locLabel = extractDisplayName(location.name);
+    const locLabel = locationLabel(location);
 
     const currentCardHTML = renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recentPrecip, nowSummary);
     const derivedIcons = deriveDailyIcons(openMeteo.hourly, openMeteo.daily);
@@ -1084,66 +1021,30 @@ function updateNowcastDisplay(nowSummary) {
     const condEl = document.querySelector('.weather-condition');
     const iconEl = document.querySelector('.weather-icon');
     const subEl  = document.querySelector('.nowcast-subtitle');
+    const ratEl  = document.querySelector('.nowcast-rationale');
 
-    // Primary icon/condition — same priority as renderCurrentCard
-    const _isWet = nowSummary.precipStateNow && nowSummary.precipStateNow.phenomenon !== 'dry';
-    const _sky   = nowSummary.skyState;
-    const _trend = nowSummary.precipTrend60m;
+    const _ns = nowSummary.nowcastState;
+    if (_ns) {
+        const rawLabel = _pickNowcastLabel(_ns);
+        const isDay = (typeof cachedCurrentData !== 'undefined' && cachedCurrentData)
+            ? cachedCurrentData.is_day === 1 : true;
+        rawLabel.icon = resolveNightIcon(rawLabel.icon, isDay);
+        const dampedDesc = _applyDisplayDamping(rawLabel.desc);
+        const finalDesc = dampedDesc;
+        const finalIcon = dampedDesc === rawLabel.desc ? rawLabel.icon : null;
 
-    let _displayDesc = null, _displayIcon = null, _subtitleText = '';
-    if (_isWet) {
-        const ps = nowSummary.precipStateNow;
-        _displayDesc = ps.desc; _displayIcon = ps.icon;
-        const age = metarAgeMinutes(ps.observedAt);
-        _subtitleText = age < 1 ? 'just now' : `${age}m ago`;
-    } else if (_sky) {
-        _displayDesc = _sky.desc; _displayIcon = _sky.icon;
-        if (_sky.observedAt) {
-            const age = metarAgeMinutes(_sky.observedAt);
-            _subtitleText = age < 1 ? 'just now' : `${age}m ago`;
+        if (condEl && finalDesc) condEl.textContent = finalDesc;
+        if (iconEl && finalIcon) iconEl.innerHTML = weatherIconImg(finalIcon, 'condition-icon');
+
+        if (subEl) {
+            subEl.textContent = _pickEvidenceLine(_ns);
+            subEl.classList.remove('stale');
+        }
+        if (ratEl) {
+            ratEl.textContent = _buildRationale(_ns);
         }
     }
-    // else: leave icon/desc at model values from initial render (no update)
 
-    // Lightning condition override (same logic as renderCurrentCard)
-    const _ls2 = nowSummary.lightningState;
-    const _precipPhen = nowSummary.precipStateNow ? nowSummary.precipStateNow.phenomenon : 'dry';
-    if (_displayDesc !== null && _ls2) {
-        const _overridden = _applyLightningConditionOverride(
-            { desc: _displayDesc, icon: _displayIcon }, _precipPhen, _ls2
-        );
-        _displayDesc = _overridden.desc;
-        _displayIcon = _overridden.icon;
-    }
-
-    if (_displayDesc !== null) {
-        if (condEl) condEl.textContent = _displayDesc;
-        if (iconEl) iconEl.innerHTML = weatherIconImg(_displayIcon, 'condition-icon');
-    }
-    if (subEl) {
-        subEl.textContent = _subtitleText;
-        subEl.classList.remove('stale');
-    }
-
-    // Update rationale text in-place
-    const ratEl = document.querySelector('.nowcast-rationale');
-    if (ratEl) {
-        let rat = '';
-        if (_isWet) {
-            const ps = nowSummary.precipStateNow;
-            const dbzNote = (ps.source === 'NEXRAD' || ps.source === 'RainViewer')
-                ? ` (${Math.round(ps.confidence * 100)}% confidence)` : '';
-            rat = `${ps.source} detecting ${ps.desc.toLowerCase()}${dbzNote}.`;
-        } else if (_sky) {
-            rat = `${_sky.source} observing ${_sky.desc.toLowerCase()}.`;
-        }
-        if (rat && _displayDesc !== _sky?.desc && _displayDesc !== nowSummary.precipStateNow?.desc && _ls2) {
-            rat += ` Lightning ${_ls2.state} (${_ls2.source}) promoted to ${_displayDesc}.`;
-        }
-        if (rat) ratEl.textContent = rat;
-    }
-
-    // Update blue hazard lane with lightning/rain/nowcast state
     updateBlueLane(nowSummary);
     _applySuppression();
 }

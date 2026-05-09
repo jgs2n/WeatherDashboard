@@ -127,22 +127,13 @@ function _pcSVG(times, pressures, range, now) {
                 + `L ${xOf(times[times.length - 1]).toFixed(1)},${bY} Z`;
 
     // Y-axis grid + labels
-    const ystep  = _pcNiceStep(yMax - yMin, 5);
-    const yStart = Math.ceil(yMin / ystep) * ystep;
-    let yLines = '';
-    for (let p = yStart; p <= yMax; p += ystep) {
-        const y = yOf(p).toFixed(1);
-        yLines +=
-            `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" `
-          + `stroke="rgba(255,255,255,0.07)" stroke-width="1"/>`
-          + `<text x="${(padL - 6).toFixed(1)}" y="${y}" text-anchor="end" dominant-baseline="middle" `
-          + `fill="rgba(255,255,255,0.45)" font-size="10" font-family="JetBrains Mono, monospace">${p}</text>`;
-    }
+    const ystep  = chartNiceStep(yMax - yMin, 5);
+    const yLines = buildYGrid(yMin, yMax, ystep, yOf, padL, W, padR);
 
     const baseline = `<line x1="${padL}" y1="${bY}" x2="${W - padR}" y2="${bY}" `
                    + `stroke="rgba(255,255,255,0.22)" stroke-width="1"/>`;
 
-    const xLabels = _pcXLabels(times, range, now, xOf, padT, cH, padL, W, padR);
+    const xLabels = buildChartXLabels(times, range, now, xOf, padT, cH, padL, W, padR);
 
     // "Now" marker — vertical dashed line + dot + stacked label above chart
     const nx   = xOf(now).toFixed(1);
@@ -176,52 +167,6 @@ function _pcSVG(times, pressures, range, now) {
     ${nowMark}
     ${xLabels}
 </svg>`;
-}
-
-function _pcXLabels(times, range, now, xOf, padT, cH, padL, W, padR) {
-    const out  = [];
-    const lY   = (padT + cH + 22).toFixed(1);
-    const tY1  = padT + cH;
-    const tY2  = padT + cH + 5;
-
-    const tick = (x, label, vertLine) => {
-        const xs = x.toFixed(1);
-        const v  = vertLine
-            ? `<line x1="${xs}" y1="${padT}" x2="${xs}" y2="${tY1}" `
-            + `stroke="rgba(255,255,255,0.05)" stroke-width="1" stroke-dasharray="4,4"/>`
-            : '';
-        return v
-            + `<line x1="${xs}" y1="${tY1}" x2="${xs}" y2="${tY2}" `
-            + `stroke="rgba(255,255,255,0.25)" stroke-width="1"/>`
-            + `<text x="${xs}" y="${lY}" text-anchor="middle" `
-            + `fill="rgba(255,255,255,0.45)" font-size="10" font-family="JetBrains Mono, monospace">${label}</text>`;
-    };
-
-    if (range === '24h') {
-        // ±24h: relative hour labels
-        const step = 12;
-        for (let h = -24; h <= 24; h += step) {
-            if (h === 0) continue; // Now marker handles center
-            const t = new Date(now.getTime() + h * 3600000);
-            const x = xOf(t);
-            if (x < padL - 16 || x > W - padR + 1) continue;
-            out.push(tick(x, `${h > 0 ? '+' : ''}${h}h`, false));
-        }
-    } else {
-        // 3d / 7d — day separators + day labels on both sides of Now
-        const maxDays = range === '3d' ? 3 : 7;
-        for (let d = -maxDays; d <= maxDays; d++) {
-            if (range === '7d' && d !== 0 && Math.abs(d) % 2 !== 0) continue;
-            const t = new Date(now);
-            t.setDate(t.getDate() + d);
-            t.setHours(0, 0, 0, 0);
-            const x = xOf(t);
-            if (x < padL - 1 || x > W - padR + 1) continue;
-            const label = d === 0 ? 'Today' : t.toLocaleDateString('en-US', { weekday: 'short' });
-            out.push(tick(x, label, true));
-        }
-    }
-    return out.join('');
 }
 
 // ─── Data helpers ─────────────────────────────────────────────────────────────
@@ -279,15 +224,3 @@ function _pcDeltas(hourly, now) {
     return { d6: d(6), d12: d(12), trendLabel, trend };
 }
 
-// Return a "nice" step size (1, 2, 5, 10, 20, …) for approximately targetSteps intervals
-function _pcNiceStep(range, targetSteps) {
-    const raw  = range / targetSteps;
-    const exp  = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 0.001))));
-    const frac = raw / exp;
-    let nice;
-    if      (frac < 1.5) nice = 1;
-    else if (frac < 3)   nice = 2;
-    else if (frac < 7)   nice = 5;
-    else                 nice = 10;
-    return Math.max(1, nice * exp);
-}

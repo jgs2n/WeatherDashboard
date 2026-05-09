@@ -8,9 +8,9 @@
 
 const _METAR_PATTERNS = [
     // Thunderstorm variants
-    { rx: /\+TS/,            desc: 'Heavy Thunderstorm',  icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
-    { rx: /TSRA|TSSN|TSGS/,  desc: 'Thunderstorm',        icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
-    { rx: /\bTS\b/,          desc: 'Thunderstorm',        icon: 'thunderstorms-day-rain', isThunder: true,  isRain: false, isSnow: false },
+    { rx: /\+TS/,            desc: 'Heavy Thunderstorm',  icon: 'thunderstorms-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /TSRA|TSSN|TSGS/,  desc: 'Thunderstorm',        icon: 'thunderstorms-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /\bTS\b/,          desc: 'Thunderstorm',        icon: 'thunderstorms-rain', isThunder: true,  isRain: false, isSnow: false },
     // Freezing precip
     { rx: /FZRA/,            desc: 'Freezing Rain',       icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
     { rx: /FZDZ/,            desc: 'Freezing Drizzle',    icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
@@ -40,7 +40,7 @@ const _METAR_PATTERNS = [
 
 // ── NWS textDescription → condition fallback mapping ─────────────────────────
 const _TEXT_PATTERNS = [
-    { rx: /thunder/i,                    desc: 'Thunderstorm',    icon: 'thunderstorms-day-rain', isThunder: true,  isRain: true,  isSnow: false },
+    { rx: /thunder/i,                    desc: 'Thunderstorm',    icon: 'thunderstorms-rain', isThunder: true,  isRain: true,  isSnow: false },
     { rx: /freezing rain/i,              desc: 'Freezing Rain',   icon: 'sleet',              isThunder: false, isRain: true,  isSnow: false },
     { rx: /heavy (rain|precip)/i,        desc: 'Heavy Rain',      icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },
     { rx: /rain|showers/i,              desc: 'Rain',            icon: 'rain',               isThunder: false, isRain: true,  isSnow: false },

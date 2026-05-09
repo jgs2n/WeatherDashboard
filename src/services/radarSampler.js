@@ -3,28 +3,39 @@
 // No DOM side effects visible to user.
 //
 // Exports (globals): sampleRadarAtPoint, loadRadarHistory, getRadarFrames,
-//                    estimateMotionVector, estimateRainTiming, buildPrecipTimeline
+//                    estimateMotionVector, estimateRainTiming, buildPrecipTimeline,
+//                    sampleUpstreamTimeline
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
+// TODO: virga suppression. 2026-04-15 Chicago backtest showed 7 consecutive
+// snapshots at dbz≈25 (sustained, not transient) with KMDW observing dry and
+// partly_cloudy — echoes aloft not reaching the surface. A dBZ threshold bump
+// won't help here (real light rain is also 18–25 dBZ). The right cross-check
+// is surface-level: if temp-dewpoint spread > ~8°F OR station humidity < ~60%,
+// treat dBZ 18–25 as "possible" rather than confirmed ON. Needs access to the
+// current METAR from this module (or synthesis at the nowcast layer).
 const RADAR_CFG = {
     ZOOM:               6,       // tile zoom level (max 7 for RainViewer)
     TILE_SIZE:          256,
-    ON_THRESHOLD:       28,      // dBZ to declare rain ON
-    OFF_THRESHOLD:      22,      // dBZ to declare rain OFF
+    ON_THRESHOLD:       22,      // dBZ to declare rain ON  (raised from 18 — reduces virga/elevated-echo false alarms)
+    OFF_THRESHOLD:      12,      // dBZ to declare rain OFF (was 22 — dropped out too aggressively)
     ON_CONFIRM_FRAMES:  2,       // consecutive frames above ON to confirm
-    OFF_HOLD_MS:        12 * 60 * 1000, // 12 min hold after last above-threshold
-    OFF_HOLD_MIN:       12,      // must equal OFF_HOLD_MS / 60000
+    OFF_HOLD_MS:        8 * 60 * 1000,  // 8 min hold after last above-threshold (was 12 min)
+    NULL_DECAY_MS:      5 * 60 * 1000,  // 5 min with null frames before ON → HOLDING (was 12 min)
     THUNDER_DBZ:        45,
     FRAME_COUNT:        10,      // number of historical frames to keep
     EDGE_MARGIN:        5,       // pixels from edge to trigger neighbor tile fetch
     NEIGHBORHOOD_RADIUS: 1,      // px radius for neighborhood sampling (3×3 at r=1)
+    MIN_VALID_PIXELS:   2,       // minimum valid pixels in neighborhood to return a result
+    MAX_COLOR_DIST:     12000,   // max squared RGB distance for palette match
     SLOPE_FRAMES:       6,       // frames used for regression (~30 min)
     MIN_SLOPE_DBZ:      2,       // dBZ/frame minimum meaningful slope
     BEGIN_SIGNAL_DBZ:   18,      // min dBZ in any recent frame to allow "begin" prediction
     END_SIGNAL_DBZ:     30,      // min dBZ in any recent frame to allow "end" prediction
     IEM_BASE:           'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0',
     RAINVIEWER_API:     'https://api.rainviewer.com/public/weather-maps.json',
+    DEBUG:              false,
 };
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -32,6 +43,7 @@ const RADAR_CFG = {
 let _radarFrames = [];      // [{ timestamp, dbz, source }]
 let _rainState   = 'OFF';   // OFF | PENDING_ON | ON | HOLDING
 let _lastOnTime  = null;    // Date when rain was last confirmed ON
+let _lastValidDbzTime = null; // Date.now() when last non-null dBZ was received
 let _pendingOnCount = 0;
 let _radarHistoryLoaded = false;
 let _radarHistoryPending = null;
@@ -81,8 +93,10 @@ function _loadImage(url) {
 
 // ── Pixel sampling ───────────────────────────────────────────────────────────
 
-// Sample a (2r+1)×(2r+1) neighborhood and return the max dBZ found (or null).
-function _sampleNeighborhoodMax(img, pxX, pxY, radius) {
+// Sample a (2r+1)×(2r+1) neighborhood and return the median dBZ (or null).
+// Requires at least MIN_VALID_PIXELS valid pixels to return a result.
+// Median is robust against isolated artifact pixels that max would amplify.
+function _sampleNeighborhood(img, pxX, pxY, radius) {
     const { canvas, ctx } = _getCanvas();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, RADAR_CFG.TILE_SIZE, RADAR_CFG.TILE_SIZE);
@@ -95,12 +109,28 @@ function _sampleNeighborhoodMax(img, pxX, pxY, radius) {
     const h = y1 - y0 + 1;
     const imgData = ctx.getImageData(x0, y0, w, h).data;
 
-    let maxDbz = null;
+    const valid = [];
+    let _debugGray = 0, _debugDist = 0, _debugMatch = 0;
     for (let i = 0; i < w * h; i++) {
         const dbz = _colorToDBZ(imgData[i * 4], imgData[i * 4 + 1], imgData[i * 4 + 2], imgData[i * 4 + 3]);
-        if (dbz !== null && (maxDbz === null || dbz > maxDbz)) maxDbz = dbz;
+        if (dbz !== null) {
+            valid.push(dbz);
+            _debugMatch++;
+        }
     }
-    return maxDbz;
+
+    if (RADAR_CFG.DEBUG && (valid.length > 0 || _debugMatch > 0)) {
+        console.debug(`[RadarSampler] neighborhood ${w}x${h}: ${valid.length} valid, matched=${_debugMatch}`);
+    }
+
+    if (valid.length < RADAR_CFG.MIN_VALID_PIXELS) return null;
+
+    // Return median
+    valid.sort((a, b) => a - b);
+    const mid = Math.floor(valid.length / 2);
+    return valid.length % 2 === 0
+        ? Math.round((valid[mid - 1] + valid[mid]) / 2)
+        : valid[mid];
 }
 
 // ── Color-to-dBZ mapping (intensity class approach) ──────────────────────────
@@ -128,12 +158,34 @@ const _INTENSITY_CLASSES = [
     { r: 214, g:   0, b:   0, dbz: 55,   label: 'intense' },   // dark red
     // class 12-13: extreme (55+ dBZ)
     { r: 192, g:   0, b: 192, dbz: 60,   label: 'extreme' },   // magenta
-    { r: 255, g: 255, b: 255, dbz: 70,   label: 'extreme' },   // white
+    // White removed — not a real NEXRAD/RainViewer radar color.
+    // Actual 70+ dBZ returns render as magenta/pink. White matches map
+    // labels, blank tiles, and terrain artifacts → false positives.
 ];
+
+// Pre-filter: only saturated, distinctly colored pixels are radar candidates.
+// Grayscale, near-white, near-black, and semi-transparent pixels are map artifacts.
+function _isRadarCandidate(r, g, b, a) {
+    if (a < 180) return false;  // semi-transparent = tile seams / artifacts
+
+    const bright = (r + g + b) / 3;
+    const sat = Math.max(r, g, b) - Math.min(r, g, b);
+
+    if (bright > 240 && sat < 30) return false;  // near-white
+    if (bright < 15) return false;                // near-black
+
+    // Grayscale: all channels within 12 of each other
+    if (Math.abs(r - g) <= 12 && Math.abs(r - b) <= 12 && Math.abs(g - b) <= 12) return false;
+
+    return true;
+}
 
 function _colorToDBZ(r, g, b, a) {
     // Transparent or near-transparent = no data
     if (a < 20) return null;
+
+    // Reject non-radar pixels before palette matching
+    if (!_isRadarCandidate(r, g, b, a)) return null;
 
     // Find nearest palette color by Euclidean distance in RGB space
     let bestDist = Infinity;
@@ -147,8 +199,8 @@ function _colorToDBZ(r, g, b, a) {
         }
     }
 
-    // If the match is very poor (dist > 30000), treat as unknown/no-data
-    if (bestDist > 30000) return null;
+    // Tight distance threshold — pixel must closely match a known radar color
+    if (bestDist > RADAR_CFG.MAX_COLOR_DIST) return null;
 
     return bestClass.dbz;
 }
@@ -219,7 +271,7 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
     if (!img) return null;
 
     const r = RADAR_CFG.NEIGHBORHOOD_RADIUS;
-    let dbz = _sampleNeighborhoodMax(img, pxX, pxY, r);
+    let dbz = _sampleNeighborhood(img, pxX, pxY, r);
 
     // Edge handling: if near tile boundary and neighborhood found nothing, try neighbor tile
     if (dbz === null && (
@@ -236,7 +288,7 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
             } else if (frameInfo.rvHost && frameInfo.rvPath) {
                 nImg = await _fetchRVTile(frameInfo.rvHost, frameInfo.rvPath, RADAR_CFG.ZOOM, neighborX, neighborY);
             }
-            if (nImg) dbz = _sampleNeighborhoodMax(nImg, nPxX, nPxY, r);
+            if (nImg) dbz = _sampleNeighborhood(nImg, nPxX, nPxY, r);
         }
     }
 
@@ -249,13 +301,32 @@ function _processFrame(timestamp, dbz) {
     const now = Date.now();
 
     if (dbz === null) {
-        // No data — don't change state, but if HOLDING, check timeout
-        if (_rainState === 'HOLDING' && _lastOnTime && (now - _lastOnTime) > RADAR_CFG.OFF_HOLD_MS) {
+        // No data — degrade gracefully instead of freezing state
+        const nullAge = _lastValidDbzTime ? (now - _lastValidDbzTime) : Infinity;
+
+        if (_rainState === 'PENDING_ON') {
+            // No data = no confirmation
             _rainState = 'OFF';
             _pendingOnCount = 0;
+        } else if (_rainState === 'ON' && nullAge > RADAR_CFG.NULL_DECAY_MS) {
+            // Too long without valid data while ON → degrade to HOLDING
+            _rainState = 'HOLDING';
+            if (RADAR_CFG.DEBUG) console.debug('[RadarSampler] ON → HOLDING (null decay)');
+        } else if (_rainState === 'HOLDING') {
+            // HOLDING: check both lastOnTime and null-age timeouts
+            const holdExpired = _lastOnTime && (now - _lastOnTime) > RADAR_CFG.OFF_HOLD_MS;
+            const nullExpired = nullAge > 2 * RADAR_CFG.NULL_DECAY_MS;
+            if (holdExpired || nullExpired) {
+                _rainState = 'OFF';
+                _pendingOnCount = 0;
+                if (RADAR_CFG.DEBUG) console.debug('[RadarSampler] HOLDING → OFF (null decay)');
+            }
         }
         return;
     }
+
+    // Valid data — update tracker
+    _lastValidDbzTime = now;
 
     switch (_rainState) {
         case 'OFF':
@@ -388,7 +459,8 @@ async function sampleRadarAtPoint(lat, lon, isUS) {
         isRaining,
         rainState: _rainState,
         timestamp: new Date(timestamp * 1000).toISOString(),
-        source
+        source,
+        lastValidDbzTime: _lastValidDbzTime ? new Date(_lastValidDbzTime).toISOString() : null,
     };
 }
 
@@ -396,6 +468,21 @@ async function sampleRadarAtPoint(lat, lon, isUS) {
 
 function getRadarFrames() {
     return _radarFrames.slice();
+}
+
+// ── Public: reset state for a different location ─────────────────────────────
+// Call before fetching nowcast for a city other than the main active location
+// (e.g. background tab temperature/icon refresh) to prevent one city's rain
+// state from bleeding into another city's poll.
+
+function resetRadarState() {
+    _rainState           = 'OFF';
+    _lastOnTime          = null;
+    _lastValidDbzTime    = null;
+    _pendingOnCount      = 0;
+    _radarHistoryLoaded  = false;
+    _radarHistoryPending = null;
+    _radarFrames         = [];
 }
 
 // ── Motion Vector Estimation (coarse correlation) ────────────────────────────
@@ -585,12 +672,12 @@ function estimateRainTiming(motionVector, currentDbz, isRaining) {
 
     // Already below OFF_THRESHOLD — hold timer is running
     if (currentIntensity <= RADAR_CFG.OFF_THRESHOLD) {
-        return { beginInMin: null, endInMin: RADAR_CFG.OFF_HOLD_MIN, confidence: 'med' };
+        return { beginInMin: null, endInMin: (RADAR_CFG.OFF_HOLD_MS / 60000), confidence: 'med' };
     }
 
     // Time to cross OFF_THRESHOLD + hold period
     const framesToCross = (currentIntensity - RADAR_CFG.OFF_THRESHOLD) / Math.abs(slope);
-    const endInMin = Math.round(framesToCross * 5) + RADAR_CFG.OFF_HOLD_MIN;
+    const endInMin = Math.round(framesToCross * 5) + (RADAR_CFG.OFF_HOLD_MS / 60000);
     if (endInMin <= 0 || endInMin > 60) return NONE;
 
     const confidence = Math.abs(slope) >= 5 ? 'high' : Math.abs(slope) >= 3 ? 'med' : 'low';
@@ -612,11 +699,11 @@ function estimateRainTiming(motionVector, currentDbz, isRaining) {
 // intentionally — timeline uses descriptive intensity, not state-machine gates.
 
 function _dbzToPrecipClass(dbz) {
-    if (dbz < 18) return 0;
-    if (dbz < 28) return 1;
-    if (dbz < 35) return 2;
-    if (dbz < 50) return 3;
-    return 4;
+    if (dbz < 22) return 0;   // dry  (matches ON_THRESHOLD)
+    if (dbz < 30) return 1;   // drizzle / very light
+    if (dbz < 40) return 2;   // light-moderate rain
+    if (dbz < 50) return 3;   // heavy rain
+    return 4;                  // convective
 }
 
 function buildPrecipTimeline(currentDbz, isRaining) {
@@ -634,9 +721,89 @@ function buildPrecipTimeline(currentDbz, isRaining) {
             minute:       i * 5,
             precipClass:  _dbzToPrecipClass(projected),
             projectedDbz: Math.round(projected),
-            confidence:   Math.max(0.1, 1.0 - i * 0.07)
+            confidence:   Math.max(0.1, 1.0 - i * 0.10)  // faster decay — slope extrapolation loses reliability quickly
         };
     });
+}
+
+// ── Upstream Sampling (Lagrangian advection, dry-case only) ──────────────────
+// For each lookahead bucket, computes the point that is currently upstream
+// along the motion vector by distance = speed × (t/60) km.  Samples the
+// current (latest) radar frame at that point plus ±LATERAL_KM perpendicular
+// spread for a track-over-point check.
+//
+// Returns an array of bucket results:
+//   { minute, centerDbz, lateralHits, upstreamLat, upstreamLon }
+//   lateralHits: how many of the 3 spread points (center + ±lateral) show dBZ ≥ 18.
+//
+// Returns null if motion vector is missing or too slow.
+
+const UPSTREAM_LATERAL_KM = 3; // ±km perpendicular spread for track check
+
+async function sampleUpstreamTimeline(lat, lon, isUS, motion, buckets = [10, 20, 30]) {
+    if (!motion || motion.speed_kmh < 5) return null;
+
+    // Latest frameInfo — needed to call _sampleFrameAtPoint
+    let latestFrameInfo = null;
+    if (isUS) {
+        const stamps = _iemTimestamps(1);
+        latestFrameInfo = { iemTs: stamps[0].ts };
+    } else {
+        const maps = await _fetchRainViewerMaps();
+        if (!maps || !maps.radar || !maps.radar.past || maps.radar.past.length === 0) return null;
+        const latest = maps.radar.past[maps.radar.past.length - 1];
+        latestFrameInfo = { rvHost: maps.host, rvPath: latest.path };
+    }
+
+    // Upstream bearing: opposite of motion direction
+    const upstreamBearing = ((motion.direction_deg + 180) % 360) * Math.PI / 180;
+    const latRad = lat * Math.PI / 180;
+    const kmPerDegLat = 111;
+    const kmPerDegLon = 111 * Math.cos(latRad);
+
+    // Perpendicular bearing (90° offset from upstream)
+    const perpBearing = (((motion.direction_deg + 180) % 360) + 90) * Math.PI / 180;
+
+    const results = [];
+
+    for (const minute of buckets) {
+        const distKm = motion.speed_kmh * (minute / 60);
+
+        // Center upstream point
+        const uLat = lat + (distKm * Math.cos(upstreamBearing)) / kmPerDegLat;
+        const uLon = lon + (distKm * Math.sin(upstreamBearing)) / kmPerDegLon;
+
+        // Three spread points: center, +lateral, -lateral
+        const spreadPoints = [
+            { sLat: uLat, sLon: uLon },
+            {
+                sLat: uLat + (UPSTREAM_LATERAL_KM * Math.cos(perpBearing)) / kmPerDegLat,
+                sLon: uLon + (UPSTREAM_LATERAL_KM * Math.sin(perpBearing)) / kmPerDegLon,
+            },
+            {
+                sLat: uLat - (UPSTREAM_LATERAL_KM * Math.cos(perpBearing)) / kmPerDegLat,
+                sLon: uLon - (UPSTREAM_LATERAL_KM * Math.sin(perpBearing)) / kmPerDegLon,
+            },
+        ];
+
+        let centerDbz = null;
+        let lateralHits = 0;
+
+        for (let i = 0; i < spreadPoints.length; i++) {
+            const { sLat, sLon } = spreadPoints[i];
+            try {
+                const dbz = await _sampleFrameAtPoint(sLat, sLon, isUS, latestFrameInfo);
+                if (i === 0) centerDbz = dbz;
+                if (dbz !== null && dbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ) lateralHits++;
+            } catch (_) {
+                // treat as null — no rain signal
+            }
+        }
+
+        results.push({ minute, centerDbz, lateralHits, upstreamLat: uLat, upstreamLon: uLon });
+    }
+
+    return results;
 }
 
 // ── Reset (called on location change) ────────────────────────────────────────
@@ -645,6 +812,7 @@ function resetRadarState() {
     _radarFrames = [];
     _rainState = 'OFF';
     _lastOnTime = null;
+    _lastValidDbzTime = null;
     _pendingOnCount = 0;
     _radarHistoryLoaded = false;
     _radarHistoryPending = null;
