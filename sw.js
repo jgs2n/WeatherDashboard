@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.44.0';
+const CACHE_NAME = 'weather-hq-v1.44.1';
 const PRECACHE_URLS = [
     './',
     'css/styles.css',
@@ -22,7 +22,7 @@ const PRECACHE_URLS = [
     'icons/meteocons/not-available.svg',
     'pwa/manifest.json',
     'pwa/icon.svg',
-    'src/state/store.js?v=1.13.2',
+    'src/state/store.js?v=1.13.3',
     'src/utils/weatherCodes.js?v=1.0.0',
     'src/utils/risk.js',
     'src/utils/dailyIcon.js',

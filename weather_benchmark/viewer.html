@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nowcast Backtest Viewer</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Bebas+Neue&display=swap');
+
+:root {
+  --bg-dark: #0a0e1a;
+  --bg-card: #131826;
+  --bg-card-hover: #1a2035;
+  --accent-primary: #00d4ff;
+  --accent-secondary: #ff6b9d;
+  --accent-warm: #ffa500;
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --accent-yellow: #facc15;
+  --text-primary: #e8edf5;
+  --text-secondary: #8b95a8;
+  --text-muted: #555e70;
+  --border: rgba(255,255,255,0.1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse at 20% 50%, rgba(0,212,255,0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(255,107,157,0.04) 0%, transparent 50%);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+
+/* ── Header ── */
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.page-header h1 {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 2rem;
+  letter-spacing: 0.2rem;
+  color: var(--accent-primary);
+  white-space: nowrap;
+}
+
+/* ── Controls bar ── */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.run-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-primary);
+  color: var(--accent-primary);
+  padding: 0.4rem 0.85rem;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.run-btn:hover:not(:disabled) { background: var(--bg-card-hover); }
+.run-btn:disabled { opacity: 0.5; cursor: default; }
+.controls select, .controls label {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.controls select:focus { outline: 1px solid var(--accent-primary); }
+.controls label:hover { background: var(--bg-card-hover); }
+.controls input[type="file"] { display: none; }
+.controls .filename { color: var(--text-secondary); font-size: 0.72rem; }
+
+/* ── Tabs ── */
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.5rem;
+  border-bottom: 2px solid var(--border);
+}
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.1rem;
+  letter-spacing: 0.15rem;
+  padding: 0.6rem 1.25rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: var(--text-primary); }
+.tab-btn.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Summary bar ── */
+.summary-bar {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+.summary-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1.25rem;
+  min-width: 120px;
+  text-align: center;
+}
+.summary-stat .stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.summary-stat .stat-label {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.08rem;
+  text-transform: uppercase;
+  margin-top: 0.2rem;
+}
+.stat-good { color: var(--accent-green); }
+.stat-warn { color: var(--accent-warm); }
+.stat-bad  { color: var(--accent-red); }
+
+/* ── Tables ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+th, td {
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 0.68rem;
+  letter-spacing: 0.06rem;
+  text-transform: uppercase;
+  position: sticky;
+  top: 0;
+  background: var(--bg-dark);
+  z-index: 1;
+}
+tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Wording color coding */
+.wc-correct    { color: var(--accent-green); }
+.wc-overstated { color: var(--accent-red); }
+.wc-understated { color: var(--accent-warm); }
+.wc-imprecise  { color: var(--accent-secondary); }
+
+/* Match indicator */
+.match-yes { color: var(--accent-green); }
+.match-no  { color: var(--accent-red); }
+.match-na  { color: var(--text-muted); }
+
+/* ── Precip timing bars ── */
+.timing-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.timing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+  font-size: 0.75rem;
+}
+.timing-header .timing-time { color: var(--text-secondary); }
+.timing-header .timing-error {
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+.timing-bar {
+  height: 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 3px;
+  position: relative;
+  margin-top: 0.3rem;
+}
+.timing-predicted, .timing-actual {
+  position: absolute;
+  top: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.timing-predicted { background: var(--accent-primary); }
+.timing-actual { background: var(--accent-green); }
+
+/* ── Top misses ── */
+.miss-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.75rem;
+  border-left: 4px solid var(--text-muted);
+}
+.miss-card.understated { border-left-color: var(--accent-warm); }
+.miss-card.overstated { border-left-color: var(--accent-red); }
+.miss-card.imprecise { border-left-color: var(--accent-secondary); }
+.miss-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+.miss-header .miss-time { color: var(--text-secondary); font-size: 0.72rem; }
+.miss-header .miss-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+}
+.miss-badge.understated { background: rgba(255,165,0,0.2); color: var(--accent-warm); }
+.miss-badge.overstated { background: rgba(248,113,113,0.2); color: var(--accent-red); }
+.miss-badge.imprecise { background: rgba(255,107,157,0.2); color: var(--accent-secondary); }
+.miss-detail { font-size: 0.78rem; }
+.miss-detail .miss-label { color: var(--text-secondary); }
+.miss-context { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.3rem; }
+
+/* ── Empty state ── */
+.empty-state {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-secondary);
+}
+.empty-state .icon { font-size: 3rem; margin-bottom: 1rem; opacity: 0.3; }
+
+/* ── Scrollable table wrapper ── */
+.table-wrap { overflow-x: auto; max-height: 70vh; overflow-y: auto; }
+
+/* ── Filter row ── */
+.filter-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.filter-row select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.75rem;
+}
+.filter-row .filter-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06rem;
+}
+
+/* ── No-data city state ── */
+.no-data-city {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.no-data-city p { margin-bottom: 0.5rem; }
+.no-data-city code {
+  font-family: inherit;
+  background: rgba(255,255,255,0.05);
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+}
+
+/* ── Goal summary ── */
+.goal-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+.goal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+.goal-card .goal-title {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.1rem;
+  margin-bottom: 0.5rem;
+}
+.goal-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  padding: 0.15rem 0;
+}
+.goal-row .goal-key { color: var(--text-muted); }
+.goal-row .goal-val { font-weight: 600; }
+.gval-good  { color: var(--accent-green); }
+.gval-warn  { color: var(--accent-warm); }
+.gval-bad   { color: var(--accent-red); }
+.gval-na    { color: var(--text-muted); }
+
+/* ── Replay tab ── */
+.replay-chart-wrap { margin-bottom: 1.25rem; user-select: none; }
+.replay-legend {
+  display: flex; gap: 0.75rem; flex-wrap: wrap;
+  font-size: 0.65rem; color: var(--text-secondary);
+}
+.legend-chip { display: inline-flex; align-items: center; gap: 0.3rem; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.replay-detail {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1rem 1.25rem;
+}
+.replay-detail-head {
+  display: flex; gap: 1.25rem; align-items: baseline;
+  margin-bottom: 0.75rem; padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.replay-detail-time { color: var(--text-secondary); font-size: 0.72rem; }
+.replay-detail-condition { font-size: 0.95rem; font-weight: 600; }
+.replay-detail-trend { font-size: 0.75rem; color: var(--accent-primary); margin: 0.35rem 0 0.75rem; }
+.replay-leads-grid {
+  display: grid; grid-template-columns: auto 1fr 1fr auto;
+  gap: 0.3rem 1.25rem; font-size: 0.78rem; align-items: center; max-width: 500px;
+}
+.replay-lead-head {
+  font-size: 0.62rem; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.05rem;
+  padding-bottom: 0.3rem; border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.replay-placeholder { text-align: center; padding: 2rem; color: var(--text-muted); font-size: 0.78rem; }
+.rp-seg { transition: opacity 0.05s; }
+.rp-seg:hover { opacity: 0.75; }
+
+@media (max-width: 700px) {
+  .container { padding: 0.75rem; }
+  .page-header { flex-direction: column; align-items: flex-start; }
+  .tabs { overflow-x: auto; }
+  .tab-btn { font-size: 0.9rem; padding: 0.5rem 0.75rem; }
+  .summary-bar { flex-direction: column; }
+  .goal-summary { grid-template-columns: 1fr 1fr; }
+  .city-row { grid-template-columns: 1fr; }
+  .city-row-labels { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header class="page-header">
+    <h1>Nowcast Backtest</h1>
+    <div class="controls">
+      <select id="citySelect" disabled>
+        <option>No data loaded</option>
+      </select>
+<button id="loadLogBtn" class="run-btn" onclick="toggleLogPicker()">&#128193; Load Log</button>
+      <select id="logSelect" style="display:none"><option value="">— pick a log —</option></select>
+      <button id="runBacktestBtn" class="run-btn">&#9654; Run Analysis</button>
+      <span class="filename" id="backtestStatus"></span>
+      <label for="fileInput">Load Report</label>
+      <input type="file" id="fileInput" accept=".json">
+      <span class="filename" id="fileName">No file loaded</span>
+    </div>
+  </header>
+
+  <!-- 4-Goal tuning summary -->
+  <div class="goal-summary" id="goalSummary" style="display:none"></div>
+
+  <!-- Summary bar -->
+  <div class="summary-bar" id="summaryBar" style="display:none"></div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabBar" style="display:none">
+    <button class="tab-btn active" data-tab="timeline">Timeline</button>
+    <button class="tab-btn" data-tab="precip">Precip Timing</button>
+    <button class="tab-btn" data-tab="stats">Aggregate Stats</button>
+    <button class="tab-btn" data-tab="misses">Top Misses</button>
+    <button class="tab-btn" data-tab="wording">Wording Log</button>
+    <button class="tab-btn" data-tab="replay">Replay</button>
+  </div>
+
+  <!-- Tab panels -->
+  <div class="tab-panel active" id="panel-timeline"></div>
+  <div class="tab-panel" id="panel-precip"></div>
+  <div class="tab-panel" id="panel-stats"></div>
+  <div class="tab-panel" id="panel-misses"></div>
+  <div class="tab-panel" id="panel-wording"></div>
+  <div class="tab-panel" id="panel-replay"></div>
+
+  <div class="empty-state" id="emptyState">
+    <div class="icon">&#9729;</div>
+    <p>Load a <code>weekly_*.json</code> report from <code>weather_benchmark/reports/</code></p>
+    <p style="margin-top:0.5rem;font-size:0.75rem;color:var(--text-muted)">
+      Generate with: <code>python backtest.py</code>
+    </p>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+let reportData = null;
+let mergedCities = [];
+let activeCityIdx = 0;
+let backtestPending = false;
+
+// ── Tab switching ──
+$('#tabBar').addEventListener('click', e => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  $$('.tab-btn').forEach(b => b.classList.remove('active'));
+  $$('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  $(`#panel-${btn.dataset.tab}`).classList.add('active');
+});
+
+// ── City switching ──
+$('#citySelect').addEventListener('change', e => {
+  activeCityIdx = parseInt(e.target.value, 10);
+  if (mergedCities.length > 0) renderCity();
+});
+
+// ── File loading ──
+$('#fileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $('#fileName').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      reportData = JSON.parse(ev.target.result);
+      initReport();
+    } catch (err) {
+      alert('Failed to parse: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
+// ── Auto-load latest report from reports/ ──
+async function tryAutoLoad() {
+  try {
+    // Try loading reports listing (works with dev server directory listing)
+    const resp = await fetch('reports/');
+    if (!resp.ok) return;
+    const text = await resp.text();
+    // Parse links from directory listing
+    const links = [...text.matchAll(/href="(weekly_[^"]+\.json)"/gi)].map(m => m[1]);
+    if (!links.length) return;
+    links.sort();
+    const latest = links[links.length - 1];
+    const dataResp = await fetch('reports/' + latest);
+    if (!dataResp.ok) return;
+    reportData = await dataResp.json();
+    $('#fileName').textContent = latest + ' (auto)';
+    initReport();
+  } catch { /* silent */ }
+}
+tryAutoLoad();
+pollBacktest(); // re-attach if a backtest was already running
+
+// ── Log picker ──
+async function toggleLogPicker() {
+  const sel = $('#logSelect');
+  if (sel.style.display !== 'none') { sel.style.display = 'none'; return; }
+  sel.innerHTML = '<option value="">Loading\u2026</option>';
+  sel.style.display = '';
+  try {
+    const logs = await fetch('/api/logs').then(r => r.json());
+    if (!logs.length) { sel.innerHTML = '<option value="">No logs found</option>'; return; }
+    sel.innerHTML = '<option value="">— all logs (7 days) —</option>' +
+      [...logs].reverse().map(f => `<option value="${f}">${f.replace('.jsonl','')}</option>`).join('');
+  } catch { sel.innerHTML = '<option value="">Server not available</option>'; }
+}
+
+// ── Run Analysis button ──
+$('#runBacktestBtn').addEventListener('click', async () => {
+  backtestPending = true;
+  $('#runBacktestBtn').disabled = true;
+  $('#backtestStatus').textContent = 'Running\u2026';
+  const logFile = $('#logSelect').value || null;
+  const body = logFile ? { log_file: logFile } : { days: 7 };
+  try {
+    await fetch('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) {
+    $('#backtestStatus').textContent = 'Server not available';
+    $('#runBacktestBtn').disabled = false;
+    return;
+  }
+  pollBacktest();
+});
+
+async function pollBacktest() {
+  try {
+    const s = await fetch('/api/backtest-status').then(r => r.json());
+    if (s.running) { setTimeout(pollBacktest, 2000); return; }
+    $('#runBacktestBtn').disabled = false;
+    if (!backtestPending) return;
+    if (s.error) {
+      $('#backtestStatus').textContent = 'Error: ' + (s.error || 'check server console');
+    } else if (s.last_report) {
+      $('#backtestStatus').textContent = 'Done';
+      await tryAutoLoad();
+    }
+  } catch { /* server not running — button stays enabled */ }
+}
+
+// ── Init after loading ──
+function initReport() {
+  if (!reportData || !reportData.cities) {
+    alert('No city data in report');
+    return;
+  }
+  buildMergedCities();
+}
+
+function buildMergedCities() {
+  const reportCities = reportData ? (reportData.cities || []) : [];
+  mergedCities = reportCities.map(rc => ({ config: rc.city, report: rc }));
+
+  const sel = $('#citySelect');
+  sel.innerHTML = '';
+  mergedCities.forEach((mc, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = mc.config.name;
+    sel.appendChild(opt);
+  });
+  sel.disabled = mergedCities.length === 0;
+  activeCityIdx = 0;
+
+  if (mergedCities.length === 0) {
+    alert('No city data in report');
+    return;
+  }
+
+  $('#emptyState').style.display = 'none';
+  $('#tabBar').style.display = '';
+  $('#summaryBar').style.display = '';
+  $('#goalSummary').style.display = '';
+  renderCity();
+}
+
+// ── Render active city ──
+function renderCity() {
+  const mc = mergedCities[activeCityIdx];
+  if (!mc) return;
+
+  const hasData = mc.report != null;
+  $('#summaryBar').style.display = hasData ? '' : 'none';
+  $('#goalSummary').style.display = hasData ? '' : 'none';
+
+  if (!hasData) {
+    const noDataHtml = `<div class="no-data-city">
+      <p style="font-size:1rem;color:var(--text-primary);margin-bottom:1rem">${mc.config.name}</p>
+      <p>No log data in this report period.</p>
+      <p style="margin-top:0.75rem;font-size:0.75rem">
+        Make sure the app is running with this location selected and
+        <code>server.py</code> is running to collect logs, then regenerate:
+      </p>
+      <p style="margin-top:0.5rem;font-size:0.78rem;color:var(--accent-primary)">
+        python backtest.py --days 7
+      </p>
+    </div>`;
+    ['timeline','precip','stats','misses','wording','replay'].forEach(t =>
+      $(`#panel-${t}`).innerHTML = noDataHtml
+    );
+    return;
+  }
+
+  const city = mc.report;
+  renderGoalSummary(city);
+  renderSummary(city);
+  renderTimeline(city);
+  renderPrecipTiming(city);
+  renderStats(city);
+  renderMisses(city);
+  renderWordingLog(city);
+  renderReplay(city);
+}
+
+// ── Helpers ──
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false, timeZone: 'UTC'
+  }) + 'Z';
+}
+
+function fmtPct(v) {
+  if (v == null) return 'N/A';
+  return v.toFixed(1) + '%';
+}
+
+function wordingClass(cat) {
+  return cat ? 'wc-' + cat : '';
+}
+
+function severityGap(s) {
+  return Math.abs((s.fcst_severity || 0) - (s.obs_severity || 0));
+}
+
+// ── Goal summary (4 tuning goals) ──
+function renderGoalSummary(city) {
+  const m = city.metrics;
+
+  function gval(v, lo, hi, fmt) {
+    // lo = good threshold (below = good for error rates, above = good for detection rates)
+    if (v == null) return '<span class="goal-val gval-na">N/A</span>';
+    const cls = v <= lo ? 'gval-good' : v <= hi ? 'gval-warn' : 'gval-bad';
+    return `<span class="goal-val ${cls}">${fmt(v)}</span>`;
+  }
+  function gvalHigh(v, lo, hi, fmt) {
+    // higher is better (detection rate)
+    if (v == null) return '<span class="goal-val gval-na">N/A</span>';
+    const cls = v >= lo ? 'gval-good' : v >= hi ? 'gval-warn' : 'gval-bad';
+    return `<span class="goal-val ${cls}">${fmt(v)}</span>`;
+  }
+  function pct(v)  { return v.toFixed(1) + '%'; }
+  function mins(v) { return v.toFixed(1) + ' min'; }
+
+  function goalCard(emoji, title, rows) {
+    let h = `<div class="goal-card"><div class="goal-title">${emoji} ${title}</div>`;
+    for (const [key, val] of rows) {
+      h += `<div class="goal-row"><span class="goal-key">${key}</span>${val}</div>`;
+    }
+    return h + '</div>';
+  }
+
+  let html = '';
+
+  // Goal 1: Is it raining now?
+  html += goalCard('🌧', 'Is it raining now?', [
+    ['False alarm', gval(m.rain_false_alarm_pct, 10, 20, pct)],
+    ['Miss',        gval(m.rain_miss_pct,        10, 20, pct)],
+  ]);
+
+  // Goal 2: Rain coming / ending?
+  html += goalCard('⏱', 'Rain timing?', [
+    ['Start MAE', gval(m.precip_start_mae_min, 10, 20, mins)],
+    ['End MAE',   gval(m.precip_end_mae_min,   10, 20, mins)],
+  ]);
+
+  // Goal 3: Lightning near?
+  html += goalCard('⚡', 'Thunder near?', [
+    ['Detection (POD)', gvalHigh(m.lightning_pod, 70, 40, pct)],
+    ['False alarm (FAR)', gval(m.lightning_far, 15, 30, pct)],
+    ['Thunder FA',  gval(m.thunder_false_alarm_pct, 15, 30, pct)],
+  ]);
+
+  // Goal 4: Confidence?
+  const viol = m.precision_violations;
+  const violVal = viol != null
+    ? `<span class="goal-val ${viol === 0 ? 'gval-good' : viol <= 5 ? 'gval-warn' : 'gval-bad'}">${viol}</span>`
+    : '<span class="goal-val gval-na">N/A</span>';
+  html += goalCard('🎯', 'Confidence?', [
+    ['Imprecise', gval(m.wording_imprecise_pct, 10, 20, pct)],
+    ['Violations', violVal],
+  ]);
+
+  $('#goalSummary').innerHTML = html;
+}
+
+// ── Summary bar ──
+function renderSummary(city) {
+  const m = city.metrics;
+  const n = m.n_scored || 0;
+
+  function statColor(val, goodThresh, warnThresh) {
+    if (val == null) return '';
+    return val >= goodThresh ? 'stat-good' : val >= warnThresh ? 'stat-warn' : 'stat-bad';
+  }
+
+  let html = '';
+  html += stat(n, 'Snapshots', '');
+
+  // Presence axis (two-axis scoring)
+  if (m.presence_correct_pct != null) {
+    html += stat(fmtPct(m.presence_correct_pct), 'Presence ✓', statColor(m.presence_correct_pct, 85, 65));
+    html += stat(fmtPct(m.presence_false_alarm_pct), 'False Alarm', m.presence_false_alarm_pct > 15 ? 'stat-bad' : m.presence_false_alarm_pct > 7 ? 'stat-warn' : 'stat-good');
+    html += stat(fmtPct(m.presence_miss_pct), 'Miss', m.presence_miss_pct > 15 ? 'stat-bad' : m.presence_miss_pct > 7 ? 'stat-warn' : 'stat-good');
+  }
+
+  // Intensity axis (two-axis scoring, denominator = precipitating snapshots only)
+  if (m.intensity_correct_pct != null) {
+    const iLabel = m.intensity_n != null ? `Intensity ✓ (n=${m.intensity_n})` : 'Intensity ✓';
+    html += stat(fmtPct(m.intensity_correct_pct), iLabel, statColor(m.intensity_correct_pct, 75, 55));
+    html += stat(fmtPct(m.intensity_overstated_pct), 'Over (int)', m.intensity_overstated_pct > 25 ? 'stat-bad' : m.intensity_overstated_pct > 12 ? 'stat-warn' : 'stat-good');
+    html += stat(fmtPct(m.intensity_understated_pct), 'Under (int)', m.intensity_understated_pct > 20 ? 'stat-bad' : m.intensity_understated_pct > 10 ? 'stat-warn' : 'stat-good');
+  }
+
+  // Legacy wording stats
+  html += stat(fmtPct(m.wording_correct_pct), 'Wording ✓', statColor(m.wording_correct_pct, 80, 60));
+  html += stat(fmtPct(m.wording_overstated_pct), 'Overstated', m.wording_overstated_pct > 20 ? 'stat-bad' : m.wording_overstated_pct > 10 ? 'stat-warn' : 'stat-good');
+  html += stat(fmtPct(m.wording_understated_pct), 'Understated', m.wording_understated_pct > 15 ? 'stat-bad' : m.wording_understated_pct > 5 ? 'stat-warn' : 'stat-good');
+  if (m.precip_start_mae_min != null) html += stat(m.precip_start_mae_min + 'm', 'Start MAE', '');
+  if (m.icon_agreement_pct != null) html += stat(fmtPct(m.icon_agreement_pct), 'Icon Match', statColor(m.icon_agreement_pct, 80, 60));
+  if (m.lightning_pod != null) html += stat(fmtPct(m.lightning_pod), 'Ltng POD', statColor(m.lightning_pod, 70, 40));
+
+  if (city.period.obs_station) {
+    const isFallback = city.period.obs_is_fallback;
+    const distNote = isFallback
+      ? `<br><span style="font-size:0.68rem;color:var(--text-secondary)">${city.period.obs_station_dist_km} km away</span>`
+      : '';
+    const stationVal = `<span style="font-size:0.85rem">${city.period.obs_station}</span>${distNote}`;
+    html += stat(stationVal, 'Obs Station', isFallback ? 'stat-warn' : '');
+  }
+
+  html += `<div class="summary-stat"><div class="stat-value" style="font-size:0.8rem;color:var(--text-secondary)">${city.period.start || ''}<br>${city.period.end || ''}</div><div class="stat-label">Period</div></div>`;
+
+  $('#summaryBar').innerHTML = html;
+}
+
+function stat(value, label, cls) {
+  return `<div class="summary-stat"><div class="stat-value ${cls}">${value}</div><div class="stat-label">${label}</div></div>`;
+}
+
+// ── Tab 1: Timeline ──
+function renderTimeline(city) {
+  const snaps = city.snapshots || [];
+  if (!snaps.length) {
+    $('#panel-timeline').innerHTML = '<div class="empty-state"><p>No snapshots</p></div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>Time</th><th>Nowcast Said</th><th>Obs Condition</th><th>Presence</th><th>Intensity</th>';
+  html += '<th>Confidence</th><th>Radar dBZ</th><th>Lightning</th>';
+  html += '<th>+10m</th><th>+30m</th><th>+60m</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const s of snaps) {
+    const presenceCell = s.presence_category === 'correct'
+      ? '<span class="match-yes">&#10003;</span>'
+      : s.presence_category === 'false_alarm'
+        ? '<span class="match-no wc-overstated">false alarm</span>'
+        : s.presence_category === 'miss'
+          ? '<span class="match-no wc-understated">miss</span>'
+          : '<span class="match-na">--</span>';
+
+    const intensityCell = s.intensity_category === 'correct'
+      ? '<span class="match-yes">&#10003;</span>'
+      : s.intensity_category === 'overstated'
+        ? '<span class="match-no wc-overstated">overstated</span>'
+        : s.intensity_category === 'understated'
+          ? '<span class="match-no wc-understated">understated</span>'
+          : '<span class="match-na">--</span>';
+
+    html += '<tr>';
+    html += `<td>${fmtTime(s.timestamp)}</td>`;
+    html += `<td>${s.displayed_condition || '--'}</td>`;
+    html += `<td>${formatObsCondition(s.obs_condition, s.obs_precip_active, s.obs_precip_in)}</td>`;
+    html += `<td>${presenceCell}</td>`;
+    html += `<td>${intensityCell}</td>`;
+    html += `<td>${s.trend_confidence || '--'}</td>`;
+    html += `<td>${s.radar_dbz != null ? s.radar_dbz + ' dBZ' : (s.radar_rain_state || '--')}</td>`;
+    html += `<td>${s.lightning_state || 'none'}</td>`;
+    html += `<td>${leadCell(s, 10)}</td>`;
+    html += `<td>${leadCell(s, 30)}</td>`;
+    html += `<td>${leadCell(s, 60)}</td>`;
+    html += '</tr>';
+  }
+
+  html += '</tbody></table></div>';
+  $('#panel-timeline').innerHTML = html;
+}
+
+function leadCell(s, min) {
+  const cond = s[`condition_+${min}`];
+  const precip = s[`precip_active_+${min}`];
+  if (cond == null) return '<span class="match-na">--</span>';
+  const icon = precip ? '&#127783;' : '';
+  return `${icon} ${formatCondition(cond)}`;
+}
+
+function formatCondition(c) {
+  if (!c) return '--';
+  return c.replace(/_/g, ' ');
+}
+
+const PRECIP_CONDITIONS = new Set([
+  'rain','drizzle','heavy_rain','snow','heavy_snow',
+  'sleet','freezing_rain','shower','thunderstorm'
+]);
+
+function formatObsCondition(cond, precipActive, precipIn) {
+  if (!cond) return '--';
+  const label = cond.replace(/_/g, ' ');
+  if (PRECIP_CONDITIONS.has(cond) && precipActive === false) {
+    const amt = precipIn != null ? precipIn.toFixed(3) + '"' : 'trace';
+    return `<span title="Scored as dry: measured ${amt} (\u22640.01\u22c5in threshold)">${label} <span style="color:var(--text-muted);font-size:0.8em">(trace)</span></span>`;
+  }
+  return label;
+}
+
+// ── Tab 2: Precip Timing ──
+function renderPrecipTiming(city) {
+  const snaps = (city.snapshots || []).filter(s =>
+    s.precip_start_error_min != null || s.precip_end_error_min != null || s.duration_error_min != null
+  );
+
+  if (!snaps.length) {
+    $('#panel-precip').innerHTML = '<div class="empty-state"><p>No precip timing predictions to compare.<br>Timing data appears when nowcast predicts beginInMin or endInMin and observations show a transition.</p></div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>Time</th><th>Said</th><th>Trend Summary</th>';
+  html += '<th>Start Error</th><th>End Error</th><th>Duration Error</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const s of snaps) {
+    html += '<tr>';
+    html += `<td>${fmtTime(s.timestamp)}</td>`;
+    html += `<td>${s.displayed_condition || '--'}</td>`;
+    html += `<td>${s.trend_summary || '--'}</td>`;
+    html += `<td>${fmtError(s.precip_start_error_min)}</td>`;
+    html += `<td>${fmtError(s.precip_end_error_min)}</td>`;
+    html += `<td>${fmtError(s.duration_error_min)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  // Summary stats
+  const startErrs = snaps.map(s => s.precip_start_error_min).filter(v => v != null);
+  const endErrs = snaps.map(s => s.precip_end_error_min).filter(v => v != null);
+  const durErrs = snaps.map(s => s.duration_error_min).filter(v => v != null);
+
+  let summary = '<div style="margin-top:1rem;display:flex;gap:1rem;flex-wrap:wrap">';
+  if (startErrs.length) summary += stat(mae(startErrs).toFixed(1) + 'm', 'Start MAE', '');
+  if (endErrs.length) summary += stat(mae(endErrs).toFixed(1) + 'm', 'End MAE', '');
+  if (durErrs.length) summary += stat(mae(durErrs).toFixed(1) + 'm', 'Duration MAE', '');
+  summary += '</div>';
+
+  $('#panel-precip').innerHTML = summary + html;
+}
+
+function fmtError(v) {
+  if (v == null) return '<span class="match-na">--</span>';
+  const abs = Math.abs(v);
+  const cls = abs <= 10 ? 'match-yes' : abs <= 20 ? '' : 'match-no';
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(1)} min</span>`;
+}
+
+function mae(arr) {
+  return arr.reduce((sum, v) => sum + Math.abs(v), 0) / arr.length;
+}
+
+// ── Tab 3: Aggregate Stats ──
+function renderStats(city) {
+  const m = city.metrics;
+
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem">';
+
+  // Wording card
+  html += card('Wording Accuracy', [
+    ['Correct', fmtPct(m.wording_correct_pct), rateClass(m.wording_correct_pct, 80, 60)],
+    ['Overstated', fmtPct(m.wording_overstated_pct), rateClassInv(m.wording_overstated_pct, 20, 10)],
+    ['Understated', fmtPct(m.wording_understated_pct), rateClassInv(m.wording_understated_pct, 15, 5)],
+    ['Imprecise', fmtPct(m.wording_imprecise_pct), ''],
+    ['Snapshots Scored', m.n_scored + ' / ' + m.n_total, ''],
+  ]);
+
+  // Binary rain accuracy card
+  html += card('Rain Binary Accuracy', [
+    ['False Alarm (said rain, was dry)', m.rain_false_alarm_pct != null ? fmtPct(m.rain_false_alarm_pct) : 'N/A', rateClassInv(m.rain_false_alarm_pct, 20, 10)],
+    ['Miss (said dry, was raining)', m.rain_miss_pct != null ? fmtPct(m.rain_miss_pct) : 'N/A', rateClassInv(m.rain_miss_pct, 20, 10)],
+    ['Thunder False Alarm', m.thunder_false_alarm_pct != null ? fmtPct(m.thunder_false_alarm_pct) : 'N/A', rateClassInv(m.thunder_false_alarm_pct, 30, 15)],
+  ]);
+
+  // Radar signal card
+  html += card('Radar Signal', [
+    ['Coverage (snapshots with dbz)', m.radar_coverage_pct != null ? fmtPct(m.radar_coverage_pct) : 'N/A', rateClass(m.radar_coverage_pct, 50, 20)],
+    ['Active (radar detected rain)', m.radar_active_pct != null ? fmtPct(m.radar_active_pct) : 'N/A', ''],
+    ['Radar vs Obs Agreement', m.radar_obs_agreement_pct != null ? fmtPct(m.radar_obs_agreement_pct) : 'N/A', rateClass(m.radar_obs_agreement_pct, 85, 70)],
+  ]);
+
+  // Precip timing card
+  html += card('Precip Timing', [
+    ['Start MAE', m.precip_start_mae_min != null ? m.precip_start_mae_min + ' min' : 'N/A', ''],
+    ['End MAE', m.precip_end_mae_min != null ? m.precip_end_mae_min + ' min' : 'N/A', ''],
+    ['Duration MAE', m.duration_mae_min != null ? m.duration_mae_min + ' min' : 'N/A', ''],
+  ]);
+
+  // Lightning card
+  html += card('Lightning', [
+    ['POD (detection)', m.lightning_pod != null ? fmtPct(m.lightning_pod) : 'N/A', rateClass(m.lightning_pod, 70, 40)],
+    ['FAR (false alarm)', m.lightning_far != null ? fmtPct(m.lightning_far) : 'N/A', rateClassInv(m.lightning_far, 30, 15)],
+  ]);
+
+  // Icon + violations card
+  html += card('Icon & Precision', [
+    ['Icon Agreement', m.icon_agreement_pct != null ? fmtPct(m.icon_agreement_pct) : 'N/A', rateClass(m.icon_agreement_pct, 80, 60)],
+    ['Precision Violations', m.precision_violations || 0, m.precision_violations > 5 ? 'wc-overstated' : ''],
+  ]);
+
+  html += '</div>';
+
+  // Lead-target summary
+  const snaps = city.snapshots || [];
+  if (snaps.length) {
+    html += '<div style="margin-top:1.5rem"><h3 style="font-family:Bebas Neue;font-size:1.2rem;letter-spacing:0.15rem;color:var(--text-primary);margin-bottom:0.75rem;padding-bottom:0.4rem;border-bottom:1px solid var(--border)">Lead-Target Accuracy</h3>';
+    html += '<div class="table-wrap"><table><thead><tr><th>Lead</th><th>Precip Hit Rate</th><th>Condition Match</th><th>Samples</th></tr></thead><tbody>';
+
+    for (const lead of [10, 20, 30, 45, 60]) {
+      const precipKey = `precip_active_+${lead}`;
+      const condKey = `condition_+${lead}`;
+      const validSnaps = snaps.filter(s => s[precipKey] != null);
+      const n = validSnaps.length;
+      if (!n) {
+        html += `<tr><td>+${lead} min</td><td class="match-na">--</td><td class="match-na">--</td><td>0</td></tr>`;
+        continue;
+      }
+      // Precip hit rate: did our precip_phenomenon match reality?
+      let precipHits = 0;
+      let condHits = 0;
+      for (const s of validSnaps) {
+        const fcstPrecip = s.precip_phenomenon !== 'dry' && s.precip_phenomenon !== '';
+        const obsPrecip = s[precipKey];
+        if (fcstPrecip === obsPrecip) precipHits++;
+        // Simple condition match
+        const obsCond = s[condKey];
+        const fcstCond = condFromPhenomenon(s.precip_phenomenon);
+        if (obsCond === fcstCond) condHits++;
+      }
+      const precipRate = (precipHits / n * 100).toFixed(1);
+      const condRate = (condHits / n * 100).toFixed(1);
+      html += `<tr><td>+${lead} min</td><td>${precipRate}%</td><td>${condRate}%</td><td>${n}</td></tr>`;
+    }
+    html += '</tbody></table></div></div>';
+  }
+
+  $('#panel-stats').innerHTML = html;
+}
+
+function condFromPhenomenon(p) {
+  const map = {
+    'dry': 'clear', '': 'clear',
+    'drizzle': 'drizzle', 'rain': 'rain', 'heavy rain': 'heavy_rain',
+    'snow': 'snow', 'heavy snow': 'heavy_snow',
+    'thunderstorm': 'thunderstorm',
+  };
+  return map[(p || '').toLowerCase()] || 'clear';
+}
+
+function card(title, rows) {
+  let h = `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">`;
+  h += `<h3 style="font-size:0.72rem;color:var(--accent-primary);letter-spacing:0.1rem;text-transform:uppercase;margin-bottom:0.6rem">${title}</h3>`;
+  for (const [label, value, cls] of rows) {
+    h += `<div style="display:flex;justify-content:space-between;padding:0.25rem 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.78rem">`;
+    h += `<span style="color:var(--text-secondary)">${label}</span>`;
+    h += `<span class="${cls}" style="font-weight:500">${value}</span></div>`;
+  }
+  return h + '</div>';
+}
+
+function rateClass(v, good, warn) {
+  if (v == null) return '';
+  return v >= good ? 'stat-good' : v >= warn ? 'stat-warn' : 'stat-bad';
+}
+
+function rateClassInv(v, bad, warn) {
+  if (v == null) return '';
+  return v <= warn ? 'stat-good' : v <= bad ? 'stat-warn' : 'stat-bad';
+}
+
+// ── Tab 4: Top Misses ──
+function renderMisses(city) {
+  const snaps = (city.snapshots || [])
+    .filter(s => s.wording_category && s.wording_category !== 'correct')
+    .map(s => ({ ...s, gap: severityGap(s) }))
+    .sort((a, b) => b.gap - a.gap || (b.obs_severity || 0) - (a.obs_severity || 0));
+
+  if (!snaps.length) {
+    $('#panel-misses').innerHTML = '<div class="empty-state"><p>No misses found — all snapshots scored correct.</p></div>';
+    return;
+  }
+
+  // Filter row
+  let html = '<div class="filter-row"><span class="filter-label">Filter:</span>';
+  html += '<select id="missFilter"><option value="all">All</option>';
+  html += '<option value="overstated">Overstated</option>';
+  html += '<option value="understated">Understated</option>';
+  html += '<option value="imprecise">Imprecise</option></select></div>';
+
+  html += '<div id="missCards">';
+  html += renderMissCards(snaps);
+  html += '</div>';
+
+  $('#panel-misses').innerHTML = html;
+
+  // Wire filter
+  $('#missFilter').addEventListener('change', e => {
+    const val = e.target.value;
+    const filtered = val === 'all' ? snaps : snaps.filter(s => s.wording_category === val);
+    $('#missCards').innerHTML = renderMissCards(filtered);
+  });
+}
+
+function renderMissCards(snaps) {
+  if (!snaps.length) return '<div style="color:var(--text-muted);padding:2rem;text-align:center">No matches</div>';
+
+  const top = snaps.slice(0, 50);
+  let html = '';
+  for (const s of top) {
+    const cat = s.wording_category;
+    html += `<div class="miss-card ${cat}">`;
+    html += `<div class="miss-header">`;
+    html += `<span class="miss-time">${fmtTime(s.timestamp)}</span>`;
+    html += `<span class="miss-badge ${cat}">${cat} (gap: ${s.gap})</span>`;
+    html += `</div>`;
+    html += `<div class="miss-detail">`;
+    html += `<span class="miss-label">Said:</span> ${s.displayed_condition || '--'}`;
+    html += ` &nbsp;|&nbsp; <span class="miss-label">Actual:</span> ${formatObsCondition(s.obs_condition, s.obs_precip_active, s.obs_precip_in)}`;
+    html += `</div>`;
+    html += `<div class="miss-context">`;
+    html += `Radar: ${s.radar_rain_state || '--'} (${s.radar_dbz != null ? s.radar_dbz + ' dBZ' : 'no data'})`;
+    html += ` | Lightning: ${s.lightning_state || 'none'}`;
+    html += ` | Conf: ${s.trend_confidence || '--'}`;
+    if (s.trend_summary) html += ` | "${s.trend_summary}"`;
+    html += `</div></div>`;
+  }
+  if (snaps.length > 50) {
+    html += `<div style="color:var(--text-muted);padding:0.5rem;font-size:0.72rem">Showing 50 of ${snaps.length}</div>`;
+  }
+  return html;
+}
+
+// ── Tab 5: Wording Log ──
+function renderWordingLog(city) {
+  const snaps = (city.snapshots || []).filter(s => s.wording_category);
+
+  if (!snaps.length) {
+    $('#panel-wording').innerHTML = '<div class="empty-state"><p>No scored wording entries</p></div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>Time</th><th>Category</th><th>Displayed</th><th>Obs</th>';
+  html += '<th>Fcst Sev</th><th>Obs Sev</th><th>Detail</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const s of snaps) {
+    const cls = wordingClass(s.wording_category);
+    html += '<tr>';
+    html += `<td>${fmtTime(s.timestamp)}</td>`;
+    html += `<td class="${cls}" style="font-weight:600;text-transform:uppercase;font-size:0.7rem">${s.wording_category}</td>`;
+    html += `<td>${s.displayed_condition || '--'}</td>`;
+    html += `<td>${formatObsCondition(s.obs_condition, s.obs_precip_active, s.obs_precip_in)}</td>`;
+    html += `<td>${s.fcst_severity != null ? s.fcst_severity : '--'}</td>`;
+    html += `<td>${s.obs_severity != null ? s.obs_severity : '--'}</td>`;
+    html += `<td style="white-space:normal;max-width:300px;font-size:0.72rem;color:var(--text-secondary)">${s.wording_detail || ''}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  $('#panel-wording').innerHTML = html;
+}
+
+// ── Replay tab ──
+
+function phenomColor(p) {
+  if (!p || p === 'dry' || p === '') return '#1e2a3a';
+  const pl = p.toLowerCase();
+  if (pl.includes('thunder')) return '#92400e';
+  if (pl.includes('heavy')) return '#1e3a8a';
+  if (pl.includes('rain') || pl.includes('shower')) return '#1d4ed8';
+  if (pl.includes('drizzle')) return '#0e7490';
+  if (pl.includes('snow') || pl.includes('sleet') || pl.includes('ice')) return '#3b6594';
+  return '#1e2a3a';
+}
+
+function obsCondColor(c) {
+  if (!c || c === 'clear' || c === 'sunny') return '#141c2b';
+  const cl = c.toLowerCase().replace(/_/g, ' ');
+  if (cl.includes('thunder')) return '#92400e';
+  if (cl.includes('heavy rain') || cl.includes('heavy shower')) return '#1e3a8a';
+  if (cl.includes('rain') || cl.includes('drizzle') || cl.includes('shower') || cl.includes('mist')) return '#1d4ed8';
+  if (cl.includes('snow') || cl.includes('sleet') || cl.includes('ice')) return '#3b6594';
+  if (cl.includes('fog') || cl.includes('haze')) return '#44403c';
+  if (cl.includes('overcast') || cl.includes('mostly cloudy')) return '#2a3548';
+  if (cl.includes('cloudy') || cl.includes('partly') || cl.includes('few') || cl.includes('scattered')) return '#1e2e40';
+  return '#141c2b';
+}
+
+function predictRainAtLead(snap, leadMin) {
+  const raining = snap.precip_phenomenon && snap.precip_phenomenon !== 'dry' && snap.precip_phenomenon !== '';
+  if (raining) {
+    const endIn = snap.trend_end_in_min;
+    if (endIn != null) return leadMin < endIn;
+    return true;
+  } else {
+    const beginIn = snap.trend_begin_in_min;
+    if (beginIn != null) {
+      const endIn = snap.trend_end_in_min;
+      if (endIn != null) return leadMin >= beginIn && leadMin < endIn;
+      return leadMin >= beginIn;
+    }
+    return false;
+  }
+}
+
+let replaySnaps = [];
+
+function renderReplay(city) {
+  const snaps = city.snapshots || [];
+  if (!snaps.length) {
+    $('#panel-replay').innerHTML = '<div class="empty-state"><p>No snapshots</p></div>';
+    return;
+  }
+  replaySnaps = snaps;
+
+  const times = snaps.map(s => new Date(s.timestamp).getTime());
+  const tMin = Math.min(...times);
+  const tMax = Math.max(...times);
+  const tSpan = tMax - tMin || 1;
+
+  const W = 1000;
+  const ROW_H = 26;
+  const Y1 = 18;
+  const Y2 = Y1 + ROW_H + 6;
+  const AXIS_Y = Y2 + ROW_H + 5;
+  const VB_H = AXIS_Y + 18;
+
+  let segs = '';
+  for (let i = 0; i < snaps.length; i++) {
+    const x1 = ((times[i] - tMin) / tSpan) * W;
+    const x2 = i < snaps.length - 1 ? ((times[i + 1] - tMin) / tSpan) * W : W;
+    const w = Math.max(x2 - x1, 0.5);
+    const s = snaps[i];
+    segs += `<rect x="${x1.toFixed(1)}" y="${Y1}" width="${w.toFixed(1)}" height="${ROW_H}" fill="${phenomColor(s.precip_phenomenon)}" data-idx="${i}" class="rp-seg"/>`;
+    segs += `<rect x="${x1.toFixed(1)}" y="${Y2}" width="${w.toFixed(1)}" height="${ROW_H}" fill="${obsCondColor(s.obs_condition)}" data-idx="${i}" class="rp-seg"/>`;
+  }
+
+  const NUM_TICKS = 5;
+  let ticks = '';
+  for (let i = 0; i <= NUM_TICKS; i++) {
+    const frac = i / NUM_TICKS;
+    const x = frac * W;
+    const d = new Date(tMin + frac * tSpan);
+    const label = d.toLocaleString('en-US', {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+      hour12: false, timeZone: 'UTC'
+    }).replace(',', '');
+    const anchor = i === 0 ? 'start' : i === NUM_TICKS ? 'end' : 'middle';
+    ticks += `<line x1="${x}" y1="${AXIS_Y}" x2="${x}" y2="${AXIS_Y + 3}" stroke="#333" stroke-width="1"/>`;
+    ticks += `<text x="${x}" y="${AXIS_Y + 13}" fill="#4b5563" font-size="9" text-anchor="${anchor}">${label}</text>`;
+  }
+
+  const legend = `<div class="replay-legend">
+    <span class="legend-chip"><span class="legend-swatch" style="background:#1e2a3a"></span>Dry</span>
+    <span class="legend-chip"><span class="legend-swatch" style="background:#0e7490"></span>Drizzle</span>
+    <span class="legend-chip"><span class="legend-swatch" style="background:#1d4ed8"></span>Rain</span>
+    <span class="legend-chip"><span class="legend-swatch" style="background:#1e3a8a"></span>Heavy Rain</span>
+    <span class="legend-chip"><span class="legend-swatch" style="background:#92400e"></span>Storm</span>
+    <span class="legend-chip"><span class="legend-swatch" style="background:#3b6594"></span>Snow</span>
+    <span style="margin-left:1rem;color:var(--text-muted)">Top = Nowcast &nbsp; Bottom = Observed</span>
+  </div>`;
+
+  const svg = `<svg id="replaySvg" viewBox="-65 0 1065 ${VB_H}" style="display:block;width:100%;cursor:pointer" preserveAspectRatio="none">
+    <rect x="0" y="${Y1}" width="${W}" height="${ROW_H}" fill="#0d1321" rx="2"/>
+    <rect x="0" y="${Y2}" width="${W}" height="${ROW_H}" fill="#0d1321" rx="2"/>
+    ${segs}
+    <text x="-4" y="${Y1 + ROW_H / 2 + 4}" fill="#4b5563" font-size="8.5" text-anchor="end">NOWCAST</text>
+    <text x="-4" y="${Y2 + ROW_H / 2 + 4}" fill="#4b5563" font-size="8.5" text-anchor="end">OBS</text>
+    ${ticks}
+    <line id="replayCursor" x1="-200" y1="${Y1 - 2}" x2="-200" y2="${Y2 + ROW_H + 2}" stroke="rgba(255,255,255,0.5)" stroke-width="1.5" stroke-dasharray="3,2" pointer-events="none"/>
+  </svg>`;
+
+  $('#panel-replay').innerHTML = `
+    <div class="replay-chart-wrap">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem">
+        <span style="font-size:0.65rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06rem">Click to inspect a moment</span>
+        ${legend}
+      </div>
+      ${svg}
+    </div>
+    <div id="replayDetail" class="replay-detail">
+      <div class="replay-placeholder">Click a point on the timeline to see the prediction vs reality detail.</div>
+    </div>`;
+
+  $('#replaySvg').addEventListener('click', e => {
+    const seg = e.target.closest('.rp-seg');
+    if (!seg) return;
+    renderReplayDetail(parseInt(seg.dataset.idx, 10), times, tMin, tSpan, W);
+  });
+}
+
+function renderReplayDetail(idx, times, tMin, tSpan, W) {
+  const s = replaySnaps[idx];
+
+  // Move cursor
+  const x = ((times[idx] - tMin) / tSpan) * W;
+  const cursor = $('#replayCursor');
+  if (cursor) { cursor.setAttribute('x1', x.toFixed(1)); cursor.setAttribute('x2', x.toFixed(1)); }
+
+  // Lead-targets table
+  const leads = [10, 20, 30, 45, 60];
+  let leadsHtml = `<div class="replay-leads-grid">
+    <div class="replay-lead-head">Lead</div>
+    <div class="replay-lead-head">Predicted</div>
+    <div class="replay-lead-head">Observed</div>
+    <div class="replay-lead-head">Match</div>`;
+
+  for (const lead of leads) {
+    const predicted = predictRainAtLead(s, lead);
+    const obsActive = s[`precip_active_+${lead}`];
+    const obsCond = s[`condition_+${lead}`];
+    const predLabel = predicted ? '&#127783; rain' : 'dry';
+    const obsLabel = obsActive == null ? '<span class="match-na">--</span>'
+      : obsActive ? `&#127783; ${obsCond ? formatCondition(obsCond) : 'rain'}`
+      : formatCondition(obsCond) || 'dry';
+    let matchIcon = '<span class="match-na">--</span>';
+    if (obsActive != null) {
+      matchIcon = (predicted === obsActive)
+        ? '<span class="match-yes">&#10003;</span>'
+        : '<span class="match-no">&#10007;</span>';
+    }
+    leadsHtml += `<div>+${lead}m</div><div>${predLabel}</div><div>${obsLabel}</div><div>${matchIcon}</div>`;
+  }
+  leadsHtml += '</div>';
+
+  const matchBadge = s.wording_category
+    ? `<span class="miss-badge ${s.wording_category}" style="font-size:0.62rem;padding:0.1rem 0.4rem;border-radius:3px;text-transform:uppercase;letter-spacing:0.05rem">${s.wording_category}</span>`
+    : '';
+
+  const condColor = phenomColor(s.precip_phenomenon) !== '#1e2a3a'
+    ? 'var(--accent-primary)' : 'var(--text-primary)';
+
+  // Show a notice when observations are null because IEM data wasn't published yet
+  let dataNoticeHtml = '';
+  const obsNull = s.obs_precip_active == null && s.obs_condition == null;
+  if (obsNull && reportData && reportData.generated) {
+    const snapTime   = new Date(s.timestamp);
+    const reportTime = new Date(reportData.generated);
+    const hoursOld   = (reportTime - snapTime) / 3_600_000;
+    if (hoursOld >= 0 && hoursOld < 4) {
+      const cb = new Date(snapTime);
+      if (cb.getUTCMinutes() >= 53) cb.setUTCHours(cb.getUTCHours() + 1);
+      cb.setUTCMinutes(53, 0, 0);
+      cb.setTime(cb.getTime() + 2 * 3_600_000);
+      const cbStr = cb.toLocaleString('en-US', {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+        hour12: false, timeZone: 'UTC'
+      }) + 'Z';
+      dataNoticeHtml = `<div style="font-size:0.72rem;color:var(--accent-warm);margin-bottom:0.5rem">
+        \u23F3 IEM observations not yet published when report was generated &mdash;
+        re-run analysis after <strong>${cbStr}</strong>
+      </div>`;
+    }
+  }
+
+  $('#replayDetail').innerHTML = `
+    <div class="replay-detail-head">
+      <span class="replay-detail-time">${fmtTime(s.timestamp)}</span>
+      <span class="replay-detail-condition" style="color:${condColor}">${s.displayed_condition || 'Dry'}</span>
+      ${matchBadge}
+    </div>
+    ${s.trend_summary ? `<div class="replay-detail-trend">${s.trend_summary}${s.trend_confidence ? ` <span style="color:var(--text-muted)">(${s.trend_confidence})</span>` : ''}</div>` : ''}
+    <div style="font-size:0.72rem;color:var(--text-secondary);margin-bottom:0.75rem">
+      Obs: <strong>${formatObsCondition(s.obs_condition, s.obs_precip_active, s.obs_precip_in) || '--'}</strong>
+      &nbsp;|&nbsp; Radar: ${s.radar_dbz != null ? s.radar_dbz + ' dBZ' : (s.radar_rain_state || '--')}
+      &nbsp;|&nbsp; Lightning: ${s.lightning_state || 'none'}
+    </div>
+    ${dataNoticeHtml}
+    <div style="font-size:0.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06rem;margin-bottom:0.4rem">Lead-target: prediction vs reality</div>
+    ${leadsHtml}`;
+}
+</script>
+</body>
+</html>

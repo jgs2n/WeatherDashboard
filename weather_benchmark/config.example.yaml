@@ -1,0 +1,69 @@
+# Weather HQ Benchmark Configuration
+# Copy this to config.yaml and customize for your setup.
+
+locations:
+  - name: Arden, NC
+    lat: 35.47
+    lon: -82.53
+    station: KAVL       # Asheville Regional
+
+  - name: Raleigh, NC
+    lat: 35.78
+    lon: -78.64
+    station: KRDU       # Raleigh-Durham Intl
+
+  - name: Bozeman, MT
+    lat: 45.68
+    lon: -111.05
+    station: KBZN       # Bozeman Yellowstone Intl
+
+  - name: Sparta, NJ
+    lat: 41.05
+    lon: -74.63
+    station: KCDW       # Caldwell — closest ASOS to Sparta
+
+  - name: Georgetown, Bahamas
+    lat: 23.47
+    lon: -75.78
+    station: MYEG       # Exuma Intl (IEM may not have data — will degrade gracefully)
+
+# Directories (relative to this config file)
+forecast_dir: ./data/forecasts
+nowcast_dir: ./data/nowcasts
+observation_dir: ./data/observations
+report_dir: ./reports
+
+# Observation source
+observation_source: iem_asos
+
+# Forecast scoring thresholds
+scoring:
+  horizons: [0, 1, 3, 5, 7]        # Day buckets to score
+  precip_threshold: 0.01            # inches — below this = "dry"
+  precip_prob_threshold: 50         # % — above this = "forecasting rain"
+  temp_bias_threshold: 2.0          # F — sustained bias triggers weakness
+  precip_false_alarm_threshold: 0.30
+  thunder_miss_threshold: 0.40
+  min_samples_for_weakness: 10
+  timing_match_window_hours: 6      # max hours to match rain start/stop events
+
+# Nowcast scoring
+nowcast_scoring:
+  enabled: true
+  precip_timing_window_min: 60
+  precision_violation_thresholds:
+    low_confidence_max_precision_min: 15    # don't say "in ~3 min" at low confidence
+    med_confidence_max_precision_min: 10
+  wording_overstated_threshold: 0.20
+  wording_understated_threshold: 0.15
+  confidence_calibration_min_gap: 0.10     # high should beat low by at least 10%
+
+# External provider comparison (ForecastAdvisor, etc.)
+provider_compare:
+  enabled: false
+  import_dir: ./data/provider_scores
+
+# Report generation
+reporting:
+  formats: [markdown, csv, json]
+  include_raw_errors: false

@@ -4,9 +4,47 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 
 const CHANGELOG = [
+    {
+        version: '0.8.1',
+        date: '2026-05-09',
+        features: [
+            {
+                title: 'Lightning Rebuilt on NOAA GOES GLM',
+                desc: 'Replaced the Blitzortung WebSocket with direct NOAA GOES GLM (Geostationary Lightning Mapper) polling. Reads GLM L2 LCFA NetCDF files straight from the noaa-goes19/noaa-goes18 S3 buckets and parses them in-browser using a vendored 176 KB pure-JS HDF5 reader (jsfive, lazy-loaded on first poll). No proxy, no API key, no runtime CDN dependency. Auto-selects GOES-East or GOES-West by longitude.'
+            },
+            {
+                title: 'Honest Lightning Bands',
+                desc: 'GLM is a storm-scale flash detector at ~10 km resolution, not a precise strike locator. Distance bands were widened accordingly: active ≤ 10 mi (10 min), nearby ≤ 20 mi (15 min), approaching ≤ 40 mi (20 min). The rolling buffer is 20 minutes. Dry-background "thunder nearby" now requires at least two close flashes to suppress single-pixel noise. Coverage is the Americas only (~52N–52S); outside coverage falls back to METAR thunder detection in the US.'
+            },
+            {
+                title: 'Synthesized Nowcast State',
+                desc: 'New unified nowcast state cleanly answers three questions independently — is it precipitating, what is the sky doing, and is there thunder. Radar leads precip, METAR can override for drizzle/fog cases radar misses, and the model only gap-fills when no observation is available. Sky state uses hysteresis to stop the condition label from flipping on borderline readings, and per-source confidence scores drive the merge.'
+            },
+            {
+                title: 'Nowcast Snapshot Logger',
+                desc: 'Every nowcast cycle now emits a structured snapshot (radar, METAR, lightning, model context, derived state) to an optional local logger endpoint. Silently no-ops when the logger or server is unavailable. Powers the new weather_benchmark backtesting tooling without affecting the live dashboard.'
+            },
+            {
+                title: 'Smarter Polling Cadence',
+                desc: 'Lightning polling now adapts to conditions: 60 s during active storms, 2 min when unsettled, 5 min when quiet. File fetches are capped by age and size so polls stay light even when many GLM files land at once.'
+            },
+            {
+                title: 'Recent Precip Tile De-duplication',
+                desc: 'Fixed a rendering bug where the recent-precipitation sparkline tile could be appended multiple times on rapid refresh, leaving duplicate tiles in the weather details strip.'
+            },
+            {
+                title: 'Meteocons Vendored for Offline Use',
+                desc: 'All Meteocons SVG icons (clear, partly cloudy, overcast, fog, drizzle, rain, snow, sleet, thunderstorms, hail, mist) are now precached by the service worker and bundled into the deploy script, so the dashboard renders correctly offline and on first load even on slow networks.'
+            },
+            {
+                title: 'About Page Refresh',
+                desc: 'The Nowcast section in the About page was rewritten for clarity — explains the four-source fusion (radar, station observations, GLM lightning, model gap-fill) and the role of hysteresis and adaptive polling without drowning the reader in thresholds.'
+            }
+        ]
+    },
     {
         version: '0.8.0',
         date: '2026-03-15',
