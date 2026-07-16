@@ -292,60 +292,91 @@ The lightning state modifies the displayed condition through a strict priority l
     Bucket 6  → 0.58  (30 min out)
     Bucket 11 → 0.23  (55 min out)
 
-8b. Timeline summarization (_summarizePrecipTimeline)
-  Converts timeline into natural language with confidence tiers.
+8b. Trend summarization (_summarizeTrend, v1.47.0)
+  Converts fused timing into natural language with confidence tiers.
+  NORMATIVE precision rules (enforced by the benchmark precision-violation
+  check):
+    - Clock times appear ONLY at high confidence.
+    - Exact single-minute claims never appear below high confidence.
+    - No minute value ≤ 10 ever appears at low confidence.
+    - Emitted beginInMin/endInMin fields are floored (_clampPrecision):
+      low → ≥ 15 min, med → ≥ 10 min, high → unclamped.
 
-  No timeline (< 3 frames):
-    → Simple fallback strings at low confidence ("Rain in ~X min", "Rain ending in ~X min")
+  Wording by tier:
+    High:   "Rain starting ~3:45 PM" / "Clearing by ~4:20 PM"
+            (clock time rounded to 5 min; location-local when the Open-Meteo
+            UTC offset is available, else browser-local)
+    Medium: "Rain likely in ~X–Y min" / "Rain tapering off in ~X–Y min"
+            (±5-min range around the estimate)
+    Low:    "Showers possible soon" / "Rain now, clearing later" (vague only)
 
-  Intermittent (3+ dry→wet transitions):
-    → "Intermittent rain next hour" (low confidence)
+  Special cases:
+    Intermittent (3+ dry→wet transitions, slope path only):
+      → "Intermittent rain next hour" (low confidence)
+    Trailing edge beyond march horizon (wet, method 'edge-horizon'):
+      → "Rain continuing this hour" (med confidence)
+    No timeline and no edge (< 3 frames):
+      → vague fallback strings at low confidence
 
-  Average confidence of wet buckets determines phrasing tier:
-    High (≥ 0.7):  "Rain continuing for ~X min"  /  "Rain beginning in ~X min"
-    Medium (0.4–0.7): "Rain may continue ~X min"  /  "Rain may begin in ~X–X min"
-    Low (< 0.4):   "Rain now, clearing later"     /  "Showers possible soon"
+8c. Rain timing estimation (edge geometry primary, slope fallback — v1.47.0)
 
-8c. Rain timing estimation (estimateRainTiming)
-  Regression-based prediction for rain onset/offset.
+  PRIMARY — edge geometry (sampleEdgeTiming):
+    - Requires a motion vector with speed ≥ 5 km/h.
+    - March upstream along the storm track (compass direction + 180°) in
+      EDGE_STEP_KM (2 km) steps on the latest frame, out to
+      min(speed × 60 min, EDGE_MAX_RANGE_KM 120 km).
+    - Dry case: leading edge = start of first run of ≥ EDGE_WET_RUN_SAMPLES (2)
+      consecutive samples ≥ BEGIN_SIGNAL_DBZ (18).
+      beginInMin = edge distance ÷ speed × 60.
+    - Wet case: trailing edge = start of first run of ≥ EDGE_DRY_GAP_SAMPLES (4,
+      ~8 km) consecutive dry samples (< EDGE_DRY_DBZ 15 or no echo). The gap
+      length requirement keeps small holes inside a storm complex from reading
+      as clearing. endInMin = edge distance ÷ speed × 60. No user-facing hold
+      padding (the hysteresis HOLDING state still governs the rain state
+      machine separately).
+    - Lateral track check at the edge: center ± EDGE_LATERAL_KM (3 km)
+      perpendicular; hits at ≥ 18 dBZ.
+    - Suppressed when: prediction > 60 min, or the entire profile has no data
+      (likely tile failure — never mistaken for instant clearing).
 
-  Gates (all must pass to show a prediction):
-    - Slope must exceed 2 dBZ/frame (MIN_SLOPE_DBZ)
-    - Trend direction must be consistent (≤ 1 sign reversal)
-    - At least one recent frame must show a meaningful echo
+  Confidence (dry): lateralHits ≥ 2 AND speed ≥ 10 AND slope also fires → high
+                    lateralHits ≥ 2 → med;  otherwise → low
+  Confidence (wet): speed ≥ 10 → high;  otherwise → med
+                    no trailing edge in range → 'edge-horizon' (med)
 
-  Not raining (predicting onset):
-    - Slope must be positive (rising)
-    - Recent frame must have ≥ 18 dBZ (BEGIN_SIGNAL_DBZ)
-    - Gap = ON_THRESHOLD (28) − current dBZ; time = (gap / slope) × 5 min
-    - Must result in 0–60 min range, else suppressed
-
-  Raining (predicting cessation):
-    - Slope must be negative (falling)
-    - Recent frame must have ≥ 30 dBZ (END_SIGNAL_DBZ)
-    - If already below OFF_THRESHOLD (22): return remaining hold time (12 min)
-    - Otherwise: time to cross OFF_THRESHOLD + 12 min hold period
-    - Must result in > 0 and ≤ 60 min, else suppressed
-
-  Confidence:
-    |slope| ≥ 5 → high
-    |slope| ≥ 3 → med
-    else        → low
+  FALLBACK — slope timeline (no motion vector / stationary):
+    - First/last wet bucket of the 12-bucket slope timeline (8a).
+    - Tier from average wet-bucket confidence (≥0.7 / ≥0.4), CAPPED at med —
+      slope-only never claims high.
+    - When even the timeline is missing, estimateRainTiming's regression value
+      may be used at low confidence:
+      gates: slope > 2 dBZ/frame, ≤ 1 sign reversal, recent echo present,
+      result within 0–60 min.
 
 
 9. MOTION VECTOR ESTIMATION
 =============================
 
-Function: estimateMotionVector(lat, lon, isUS)
+Function: estimateMotionVector(lat, lon, isUS)  — v1.46.0
 
   - Takes 3 most recent radar frames.
-  - Samples a 5×5 grid (0.02° spacing ≈ 2 km) around the point for each frame.
-  - Creates binary rain masks (dBZ ≥ 22 = rain pixel).
-  - For consecutive frame pairs, searches ±2 pixel shifts in 2D for best overlap score.
-  - Requires overlap score ≥ 2 pixels to accept a shift.
-  - If 2 shifts available, directions must agree within 45° (otherwise → null).
-  - Averages shifts, converts to km/h using grid spacing (~2 km) and frame interval (5 min).
-  - Returns null if: < 3 frames, < 2 frames with data, inconsistent directions, speed < 1 km/h.
+  - Samples a 9×9 grid (MOTION_GRID; 0.02° spacing ≈ 2 km US, 0.04° for
+    RainViewer's 10-min cadence) around the point for each frame.
+  - Creates binary rain masks (dBZ ≥ 12 OFF_THRESHOLD = rain pixel).
+  - For consecutive frame pairs, searches ±4 cell shifts (MOTION_MAX_SHIFT) —
+    resolves storm speeds up to ~107 km/h (the old 5×5/±2 saturated at ~53).
+  - Requires overlap score ≥ 3 (MOTION_MIN_OVERLAP) to accept a shift.
+  - Parabolic sub-cell refinement of the score surface halves quantization
+    (~±13 km/h residual).
+  - Per-pair frame intervals come from frame timestamps (RainViewer 10-min
+    cadence no longer inflates speed 2×).
+  - direction_deg is the COMPASS heading the storm moves toward (0 = N,
+    90 = E). Pre-v1.46.0 a convention mix-up pointed upstream sampling 90°
+    off-track; all edge/upstream geometry assumes this compass convention.
+  - If 2 velocity vectors available, directions must agree within 45°
+    (otherwise → null).
+  - Returns null if: < 3 frames, < 2 frames with data, inconsistent
+    directions, speed < 1 km/h.
 
 
 10. DISPLAY DAMPING (Jitter Prevention)

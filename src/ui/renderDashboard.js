@@ -267,6 +267,13 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
         if (rpSliced) precipHTML = renderPrecipSpark(rpSliced);
     }
 
+    // Precip vs normal (climatology) tile — cache-first for instant paint;
+    // the deferred fetch in main.js patches it when fresh data lands.
+    cachedClimatology = (typeof getCachedClimatology === 'function' && location.lat != null)
+        ? getCachedClimatology(location.lat, location.lon) : null;
+    const climoHTML = (typeof renderClimoTile === 'function')
+        ? renderClimoTile(cachedClimatology) : '';
+
     // Alert data is populated by updateRedLane in Tier 2
     cachedAlerts = { active: [], upcoming: [] };
 
@@ -386,6 +393,8 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                 </div>
                 <!-- Row 8: recent precip (full width) -->
                 ${precipHTML}
+                <!-- Row 9: precip vs normal / climatology (full width) -->
+                ${climoHTML}
             </div>
         </div>
     `;
@@ -963,7 +972,26 @@ function updateRecentPrecipTile(recentPrecip) {
 
     // Remove any existing precip tiles to avoid duplicates
     weatherDetails.querySelectorAll('.precip-spark-tile').forEach(el => el.remove());
-    weatherDetails.insertAdjacentHTML('beforeend', precipHTML);
+    // Keep stable order: precip spark before the climo tile
+    const climoTile = weatherDetails.querySelector('.climo-tile');
+    if (climoTile) climoTile.insertAdjacentHTML('beforebegin', precipHTML);
+    else weatherDetails.insertAdjacentHTML('beforeend', precipHTML);
+}
+
+// In-place patcher for the climatology (precip vs normal) tile.
+function updateClimatologyTile(climo) {
+    if (!climo || !climo.windows) return;
+
+    cachedClimatology = climo;
+    const climoHTML = renderClimoTile(climo);
+    if (!climoHTML) return;
+
+    const weatherDetails = document.querySelector('.weather-details');
+    if (!weatherDetails) return;
+
+    // Remove any existing climo tiles (incl. placeholder) to avoid duplicates
+    weatherDetails.querySelectorAll('.climo-tile').forEach(el => el.remove());
+    weatherDetails.insertAdjacentHTML('beforeend', climoHTML);
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────

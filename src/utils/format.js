@@ -215,9 +215,75 @@ function renderPrecipSpark(rp) {
     </div>`;
 }
 
+// ===== PRECIP VS NORMAL (CLIMATOLOGY) TILE =====
+// Pure HTML builder — data comes from getCachedClimatology / fetchClimatology.
+
+function _climoFmtIn(v) {
+    if (v === null || v === undefined) return '—';
+    return v >= 10 ? `${v.toFixed(1)}"` : `${v.toFixed(2)}"`;
+}
+
+function _climoDepClass(pct) {
+    if (pct === null || pct === undefined) return 'norm';
+    if (pct >= 10) return 'wet';
+    if (pct <= -10) return 'dry';
+    return 'norm';
+}
+
+function _climoDepText(pct) {
+    if (pct === null || pct === undefined) return '—';
+    return `${pct > 0 ? '+' : ''}${pct}%`;
+}
+
+function renderClimoTile(climo) {
+    if (!climo || !climo.windows) {
+        return `
+    <div class="climo-tile placeholder">
+        <div class="climo-header">Precip vs Normal <span class="climo-note">Loading…</span></div>
+        <div class="climo-cols">
+            ${['1M', '3M', '6M', '12M'].map(l => `
+            <div class="climo-col">
+                <div class="climo-label">${l}</div>
+                <div class="climo-actual">—</div>
+                <div class="climo-expected">&nbsp;</div>
+                <div class="climo-dep norm">&nbsp;</div>
+            </div>`).join('')}
+        </div>
+    </div>`;
+    }
+
+    const cols = climo.windows.map(w => `
+            <div class="climo-col">
+                <div class="climo-label">${w.label}</div>
+                <div class="climo-actual">${_climoFmtIn(w.actualIn)}</div>
+                <div class="climo-expected">exp ${_climoFmtIn(w.expectedIn)}</div>
+                <div class="climo-dep ${_climoDepClass(w.pctDeparture)}">${_climoDepText(w.pctDeparture)}</div>
+            </div>`).join('');
+
+    return `
+    <div class="climo-tile" onclick="openClimoChart()" title="Tap for chart — actual vs 10-yr normal (ERA5)">
+        <div class="climo-header">Precip vs Normal <span class="climo-note">10-yr · ERA5</span></div>
+        <div class="climo-cols">${cols}</div>
+    </div>`;
+}
+
 function formatSunTime(isoString) {
     const date = new Date(isoString);
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+// Clock time rounded to the nearest roundMin minutes, e.g. "3:45 PM".
+// utcOffsetSec (Open-Meteo utc_offset_seconds) renders the time in the
+// location's zone; null falls back to browser-local (same limitation as
+// formatSunTime).
+function formatClockTimeRounded(msEpoch, roundMin = 5, utcOffsetSec = null) {
+    const roundMs = roundMin * 60 * 1000;
+    const rounded = Math.round(msEpoch / roundMs) * roundMs;
+    if (utcOffsetSec !== null && utcOffsetSec !== undefined) {
+        const shifted = new Date(rounded + utcOffsetSec * 1000);
+        return shifted.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+    }
+    return new Date(rounded).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
 // ===== PRESSURE TREND (3hr change from hourly data) =====

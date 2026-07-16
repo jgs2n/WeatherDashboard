@@ -2,3 +2,6 @@ pyyaml>=6.0
 pandas>=2.0
 requests>=2.28
 numpy>=1.24
+Pillow>=10.0     # collector reads NEXRAD tile PNGs
+h5py>=3.8        # reads GOES GLM L2 LCFA NetCDF4/HDF5 files (lightning)
+pytest>=7.0      # runs the validation test suite

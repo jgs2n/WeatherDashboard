@@ -12,7 +12,6 @@ import json
 import subprocess
 import threading
 import traceback
-from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -32,32 +31,12 @@ _backtest_lock = threading.Lock()
 _backtest_proc = None
 _backtest_status = {'running': False, 'last_report': None, 'error': None}
 
-# Acquisition log state — all records for a session go to acquiring.jsonl;
-# finalized to START--END.jsonl on session end or 15-min gap.
-_acquiring_lock = threading.Lock()
-_first_log_time: 'datetime | None' = None  # UTC time of first record in current session
-_last_log_time: 'datetime | None' = None   # UTC time of most recent record written
-
 
 def _city_slug(name):
     """'Charleston, WV' -> 'charleston_wv'"""
     s = name.lower()
     s = re.sub(r'[^a-z0-9]+', '_', s)
     return s.strip('_')
-
-
-def _finalize_acquisition(start_dt: datetime, end_dt: datetime) -> None:
-    """Rename acquiring.jsonl → START--END.jsonl. No-op if file missing."""
-    src = LOG_DIR / 'acquiring.jsonl'
-    if not src.exists():
-        return
-    fname = (start_dt.strftime('%Y-%m-%d_%H-%M-%SZ') + '--' +
-             end_dt.strftime('%Y-%m-%d_%H-%M-%SZ') + '.jsonl')
-    try:
-        src.rename(LOG_DIR / fname)
-        print(f'Acquisition finalized → {fname}')
-    except OSError as e:
-        print(f'Warning: could not finalize acquiring.jsonl: {e}', file=sys.stderr)
 
 
 def _latest_report():
@@ -112,11 +91,7 @@ class WeatherDevHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
-        if self.path == '/api/nowcast-log':
-            self._handle_nowcast_log()
-        elif self.path == '/api/acquisition-end':
-            self._handle_acquisition_end()
-        elif self.path == '/api/backtest':
+        if self.path == '/api/backtest':
             self._handle_backtest()
         elif self.path == '/api/health-check':
             self._handle_health_check()
@@ -142,48 +117,6 @@ class WeatherDevHandler(SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps({'error': message}).encode())
-
-    def _handle_nowcast_log(self):
-        global _first_log_time, _last_log_time
-        try:
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length)
-            record = json.loads(body)
-
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            now_utc = datetime.now(timezone.utc)
-
-            with _acquiring_lock:
-                # Auto-finalize if gap > 15 minutes — previous session ended without a signal
-                if _last_log_time and (now_utc - _last_log_time).total_seconds() > 900:
-                    _finalize_acquisition(_first_log_time or _last_log_time, _last_log_time)
-                    _first_log_time = None
-                # Track session start on first record
-                if _first_log_time is None:
-                    _first_log_time = now_utc
-                # Append to the single in-progress acquisition file
-                with open(LOG_DIR / 'acquiring.jsonl', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps(record, separators=(',', ':')) + '\n')
-                _last_log_time = now_utc
-
-            self._send_json(200, {'ok': True})
-        except json.JSONDecodeError:
-            self._send_error(400, 'Invalid JSON')
-        except OSError:
-            self._send_error(500, 'Log write failed')
-        except Exception:
-            print(traceback.format_exc(), file=sys.stderr)
-            self._send_error(500, 'Internal server error')
-
-    def _handle_acquisition_end(self):
-        global _first_log_time, _last_log_time
-        with _acquiring_lock:
-            end_dt = _last_log_time or datetime.now(timezone.utc)
-            start_dt = _first_log_time or end_dt
-            _finalize_acquisition(start_dt, end_dt)
-            _first_log_time = None
-            _last_log_time = None
-        self._send_json(200, {'ok': True})
 
     def _handle_backtest(self):
         global _backtest_status
@@ -348,33 +281,9 @@ def _load_cities():
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 
-    # Finalize any acquisition left open by a previous server run / crash
-    acquiring = LOG_DIR / 'acquiring.jsonl'
-    if acquiring.exists():
-        first_ts = None
-        last_ts = None
-        try:
-            with open(acquiring, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                if first_line.strip():
-                    first_ts = datetime.fromisoformat(
-                        json.loads(first_line).get('timestamp', '').replace('Z', '+00:00'))
-            with open(acquiring, 'rb') as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 4096))
-                lines = [l for l in f.readlines() if l.strip()]
-                if lines:
-                    last_ts = datetime.fromisoformat(
-                        json.loads(lines[-1]).get('timestamp', '').replace('Z', '+00:00'))
-        except Exception:
-            pass
-        now = datetime.now(timezone.utc)
-        _finalize_acquisition(first_ts or last_ts or now, last_ts or now)
-
     server = ThreadedHTTPServer(('', port), WeatherDevHandler)
     print(f'Weather HQ dev server on http://localhost:{port}')
-    print(f'Nowcast logs -> {LOG_DIR}/')
+    print(f'Logs read from -> {LOG_DIR}/  (write via collector.py)')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

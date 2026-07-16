@@ -196,8 +196,7 @@ body {
     white-space: nowrap;
 }
 
-/* ── Collection mode (local server only) ── */
-#collectBtn,
+/* ── Health-check button (local server only) ── */
 #healthCheckBtn {
     font-size: 0.62rem;
     padding: 0.25rem 0.6rem;
@@ -211,26 +210,9 @@ body {
     -webkit-tap-highlight-color: transparent;
     transition: all 0.2s ease;
 }
-#collectBtn:hover,
 #healthCheckBtn:hover {
     border-color: rgba(255,255,255,0.25);
     color: var(--text-primary);
-}
-#collectBtn.active {
-    border-color: #f87171;
-    color: #f87171;
-    background: rgba(248,113,113,0.08);
-    animation: collect-pulse 2s ease-in-out infinite;
-}
-#collectStatus {
-    font-size: 0.58rem;
-    color: #f87171;
-    white-space: nowrap;
-    opacity: 0.9;
-}
-@keyframes collect-pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.55; }
 }
 
 .location-tabs {
@@ -3304,6 +3286,82 @@ body {
     display: block;
     max-height: 90px;
 }
+
+/* ===== PRECIP VS NORMAL (CLIMATOLOGY) TILE ===== */
+
+.climo-tile {
+    grid-column: 1 / -1;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 0.5rem 0.4rem 0.4rem;
+    transition: background 0.15s;
+    margin: -0.15rem -0.25rem;
+    background: rgba(255, 255, 255, 0.02); /* explicit bg — iOS dimming rule */
+    -webkit-tap-highlight-color: transparent;
+}
+
+.climo-tile:hover {
+    background: rgba(0, 212, 255, 0.06);
+}
+
+.climo-tile.placeholder {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.climo-header {
+    text-align: center;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 0.35rem;
+}
+
+.climo-note {
+    opacity: 0.5;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.climo-cols {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.3rem;
+    text-align: center;
+}
+
+.climo-label {
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.05em;
+}
+
+.climo-actual {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary, #fff);
+    margin-top: 0.1rem;
+}
+
+.climo-expected {
+    font-size: 0.6rem;
+    color: rgba(255, 255, 255, 0.45);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.climo-dep {
+    font-size: 0.68rem;
+    font-weight: 600;
+    margin-top: 0.1rem;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.climo-dep.wet  { color: #00d4ff; }
+.climo-dep.dry  { color: var(--alert-amber, #f9a825); }
+.climo-dep.norm { color: rgba(255, 255, 255, 0.55); }
 
 /* ===== RECENT PRECIP TILE (legacy — kept for precipChart modal context) ===== */
 

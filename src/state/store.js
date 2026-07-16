@@ -4,9 +4,39 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.9.0';
 
 const CHANGELOG = [
+    {
+        version: '0.9.0',
+        date: '2026-07-16',
+        features: [
+            {
+                title: 'Precip vs Normal — 1/3/6/12-Month Totals',
+                desc: 'New tile in the current conditions card compares actual precipitation over the last 1, 3, 6, and 12 months against the 10-year average for the same windows (ERA5 reanalysis via Open-Meteo, worldwide, no API key). Color-coded departure shows wetter (blue) or drier (amber) than normal at a glance; tap for a grouped bar chart with exact totals. Results are cached per location, so the tile is instant on repeat visits.'
+            },
+            {
+                title: 'Rain Start/End Times as Clock Times',
+                desc: 'The nowcast now predicts when rain will start and stop using edge geometry — it finds the leading or trailing edge of the echo along the storm track and divides by closing speed, instead of extrapolating reflectivity trends at a point. High-confidence predictions show clock times rounded to 5 minutes ("Rain starting ~3:45 PM", "Clearing by ~4:20 PM"); medium confidence shows ranges; low confidence stays deliberately vague.'
+            },
+            {
+                title: 'Motion Vector Fixed and Upgraded',
+                desc: 'Fixed a direction-convention bug that pointed upstream storm sampling 90° off track — the main reason arrival estimates rarely fired. The correlation search also widened (9×9 grid, ±4 cells with sub-cell refinement), so fast-moving squall lines up to ~107 km/h now resolve instead of saturating at ~53 km/h.'
+            },
+            {
+                title: 'Self-Correcting Predictions + RainViewer Consensus',
+                desc: 'Each poll compares the new start/end estimate against the previous one: converging predictions earn a confidence boost, diverging ones decay. RainViewer’s own nowcast frames (already in the data we fetch) act as an independent cross-check — agreement raises confidence, and they fill in when no motion vector is available, including internationally.'
+            },
+            {
+                title: 'Faster Radar Sampling',
+                desc: 'Decoded radar tiles are now cached per poll cycle, collapsing ~75 redundant image decodes per motion estimate into about 3 tile fetches. Lower data use and faster nowcast updates, especially on phones.'
+            },
+            {
+                title: 'Offline Cache Fix',
+                desc: 'The service worker precache list had drifted out of sync with the app’s versioned file URLs, silently dropping several files from offline storage. The list is now generated to match exactly, restoring full offline coverage.'
+            }
+        ]
+    },
     {
         version: '0.8.1',
         date: '2026-05-09',
@@ -107,6 +137,7 @@ let cachedHourlyData = null;
 let activeHourlyIndex = null;
 let cachedCurrentData = null;  // current conditions snapshot for NOW pill
 let cachedNowIndex = null;     // hourly index that maps to "now"
+let cachedUtcOffsetSec = null; // active location's UTC offset (Open-Meteo utc_offset_seconds)
 
 // Radar / timeline state
 let activeRadarView = 'radar';
@@ -121,6 +152,9 @@ let cachedAQIHourly = null;
 
 // Recent precipitation state
 let cachedRecentPrecip = null;
+
+// Climatology (precip vs normal) state
+let cachedClimatology = null;
 
 // Station observation state (for condition detail modal)
 let cachedStationObs = null;

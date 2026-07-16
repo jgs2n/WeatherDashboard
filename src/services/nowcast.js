@@ -47,6 +47,10 @@ async function getNowSummary({ lat, lon, country, modelWMO: explicitWMO, locatio
     const isUS = country === 'United States';
     let obs = null;
 
+    // Fresh radar tiles for this poll cycle (motion grid + upstream march
+    // share decoded tiles within the cycle)
+    if (typeof beginSampleCycle === 'function') beginSampleCycle();
+
     if (isUS) {
         obs = await fetchStationObservation(lat, lon);
     }
@@ -89,12 +93,6 @@ async function getNowSummary({ lat, lon, country, modelWMO: explicitWMO, locatio
     const nowcastState = deriveNowcastState(radarState, obs, modelWMO, lightningState, precipTrend60m, country, omPrecipInHr);
 
     const summary = { skyState, precipStateNow, precipTrend60m, lightningState, nowcastState };
-
-    // Log snapshot for ML training (silent no-op if logger not loaded or server unavailable)
-    if (typeof logNowcastSnapshot === 'function') {
-        logNowcastSnapshot({ lat, lon, country, radarState, motion, obs, summary, locationName: explicitName, stateCode: explicitStateCode, modelContext: explicitModelCtx, modelHourlyContext: explicitModelHourly });
-    }
-
     return summary;
 }
 
@@ -277,145 +275,68 @@ function _computePrecipNow(obs, radarState, country) {
     return null;
 }
 
-// ── Product 3: Precipitation Trend 0–60 min ──────────────────────────────────
-// Builds a 12-bucket timeline from radar extrapolation and summarizes it into
-// confidence-aware human language.
+// ── Poll-cycle self-correction (prediction memory) ───────────────────────────
+// Each poll compares the new begin/end target time against the previous one.
+// Converging predictions (≤ 5 min drift, twice in a row) earn a one-tier
+// confidence boost and light smoothing; diverging ones (> 15 min drift) decay
+// a tier and re-derive. Memory expires after 15 min or on kind change.
 
-async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion) {
-    const timeline = buildPrecipTimeline(currentDbz, isRaining);
+const PRED_MEMORY_MAX_AGE_MS = 15 * 60 * 1000;
+const PRED_STABLE_DRIFT_MIN  = 5;   // ≤ this drift counts as converging
+const PRED_DIVERGE_DRIFT_MIN = 15;  // > this drift counts as diverging
 
-    // ── Wet case: slope-only clearing prediction (unchanged) ─────────────────
-    if (isRaining) {
-        let endInMin = null;
-        if (timeline) {
-            const lastWet = [...timeline].reverse().find(b => b.precipClass > 0);
-            if (lastWet) endInMin = lastWet.minute;
-        } else {
-            const t = estimateRainTiming(motion, currentDbz, isRaining);
-            endInMin = t.endInMin;
-        }
-        const summaryResult = _summarizePrecipTimeline(timeline, true, null, endInMin, null, false);
-        return {
-            timeline,
-            summary:           summaryResult ? summaryResult.text : null,
-            summaryConfidence: summaryResult ? summaryResult.confidence : 'low',
-            beginInMin: null,
-            endInMin
-        };
-    }
+let _predMemory = null; // { kind: 'begin'|'end', targetMs, updatedAtMs, stableCount }
 
-    // ── Dry case: upstream sampling primary, slope as confirmation ───────────
-    // Slope-derived beginInMin (fallback / confirmation signal)
-    let slopeBeginInMin = null;
-    if (timeline) {
-        const firstWet = timeline.find(b => b.precipClass > 0);
-        if (firstWet) slopeBeginInMin = firstWet.minute;
-    } else {
-        const t = estimateRainTiming(motion, currentDbz, isRaining);
-        slopeBeginInMin = t.beginInMin;
-    }
+// Reset prediction memory — call on location change (alongside resetRadarState).
+function resetPredictionMemory() { _predMemory = null; }
 
-    // Upstream sampling — requires motion vector
-    let beginInMin = slopeBeginInMin;
-    let trackCertainty = null; // null = no upstream result, 'fair', or 'good'
-    const slopeAlsoFires = slopeBeginInMin !== null;
-
-    if (motion && motion.speed_kmh >= 5) {
-        try {
-            const upstream = await sampleUpstreamTimeline(lat, lon, isUS, motion);
-            if (upstream) {
-                // Find earliest bucket where center shows rain (dBZ ≥ BEGIN_SIGNAL_DBZ)
-                // and lateral spread passes the track-over-point gate (≥2/3 hits)
-                for (const bucket of upstream) {
-                    const centerRain = bucket.centerDbz !== null && bucket.centerDbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ;
-                    if (!centerRain) continue;
-
-                    // lateralHits counts all 3 points (center included); need ≥2
-                    if (bucket.lateralHits < 2) {
-                        // Marginal — only set 'fair' if nothing better found yet
-                        if (trackCertainty === null) {
-                            beginInMin     = bucket.minute;
-                            trackCertainty = 'fair';
-                        }
-                    } else {
-                        // Good spread: motion consistent check
-                        const motionConsistent = motion.speed_kmh >= 10; // proxy for reliable vector
-                        beginInMin     = bucket.minute;
-                        trackCertainty = motionConsistent ? 'good' : 'fair';
-                        break; // use earliest qualifying bucket
-                    }
-                }
-            }
-        } catch (err) {
-            console.warn('[Nowcast] Upstream sampling failed:', err.message);
-        }
-    }
-
-    const summaryResult = _summarizePrecipTimeline(timeline, false, beginInMin, null, trackCertainty, slopeAlsoFires);
-    return {
-        timeline,
-        summary:           summaryResult ? summaryResult.text : null,
-        summaryConfidence: summaryResult ? summaryResult.confidence : 'low',
-        beginInMin,
-        endInMin: null
-    };
+const _CONF_TIERS = ['low', 'med', 'high'];
+function _confShift(conf, delta) {
+    const i = Math.max(0, Math.min(_CONF_TIERS.length - 1, _CONF_TIERS.indexOf(conf) + delta));
+    return _CONF_TIERS[i];
 }
 
-// ── Precipitation Timeline Summarizer ────────────────────────────────────────
-// Converts the 12-bucket timeline into a confidence-aware human string.
-// Returns { text, confidence } or null if no precipitation is predicted.
-
-// trackCertainty: null | 'fair' | 'good'  — from upstream sampling (dry case only)
-// slopeAlsoFires: bool — slope timeline also predicted rain (enables premium tier)
-function _summarizePrecipTimeline(timeline, isRaining, beginInMin, endInMin, trackCertainty = null, slopeAlsoFires = false) {
-    // No timeline (< 3 radar frames) — fall back to vague strings at low confidence.
-    // Do NOT include exact minute counts here: confidence is always 'low' in this
-    // branch, and the benchmark precision-violation check flags exact timing below
-    // 15 min at low confidence.
-    if (!timeline) {
-        if (isRaining)                        return { text: 'Rain now, clearing later', confidence: 'low' };
-        if (!isRaining && beginInMin != null) return { text: 'Showers possible soon',   confidence: 'low' };
-        return null;
+// PURE — apply memory rules. Returns { targetMs, confidence, memory }.
+function _applyPredictionMemory(memory, kind, newTargetMs, confidence, nowMs) {
+    const fresh = { kind, targetMs: newTargetMs, updatedAtMs: nowMs, stableCount: 0 };
+    if (!memory || memory.kind !== kind ||
+        (nowMs - memory.updatedAtMs) > PRED_MEMORY_MAX_AGE_MS) {
+        return { targetMs: newTargetMs, confidence, memory: fresh };
     }
-
-    // ── Wet case: slope-based clearing (unchanged) ───────────────────────────
-    if (isRaining) {
-        const wetBuckets = timeline.filter(b => b.precipClass > 0);
-        if (wetBuckets.length === 0) return null;
-
-        let runCount = 0, prevWet = false;
-        for (const b of timeline) {
-            const wet = b.precipClass > 0;
-            if (wet && !prevWet) runCount++;
-            prevWet = wet;
-        }
-        if (runCount >= 3) return { text: 'Intermittent rain next hour', confidence: 'low' };
-
-        const avgConf = wetBuckets.reduce((s, b) => s + b.confidence, 0) / wetBuckets.length;
-        const tier = avgConf >= 0.7 ? 'high' : avgConf >= 0.4 ? 'med' : 'low';
-        const lastWet = wetBuckets[wetBuckets.length - 1];
-        const duration = lastWet.minute;
-        if (tier === 'high') return { text: `Rain continuing for ~${duration} min`, confidence: 'high' };
-        if (tier === 'med')  return { text: `Rain may continue ~${duration} min`,   confidence: 'med'  };
-        return { text: 'Rain now, clearing later', confidence: 'low' };
+    const driftMin = Math.abs(newTargetMs - memory.targetMs) / 60000;
+    if (driftMin <= PRED_STABLE_DRIFT_MIN) {
+        const stableCount = memory.stableCount + 1;
+        const targetMs = Math.round(0.7 * newTargetMs + 0.3 * memory.targetMs);
+        const conf = stableCount >= 2 ? _confShift(confidence, +1) : confidence;
+        return { targetMs, confidence: conf,
+                 memory: { kind, targetMs, updatedAtMs: nowMs, stableCount } };
     }
-
-    // ── Dry case: upstream-aware phrasing ────────────────────────────────────
-    if (trackCertainty !== null && beginInMin !== null) {
-        // Upstream sampling result is available — use it as the primary signal.
-        // Premium tier: upstream + slope both agree.
-        if (trackCertainty === 'good' && slopeAlsoFires) {
-            return { text: `Rain beginning in ~${beginInMin} min`, confidence: 'high' };
-        }
-        if (trackCertainty === 'good') {
-            return { text: `Rain likely in ~${beginInMin} min`, confidence: 'med' };
-        }
-        // fair certainty
-        return { text: `Rain possible in ~${beginInMin} min`, confidence: 'low' };
+    if (driftMin > PRED_DIVERGE_DRIFT_MIN) {
+        return { targetMs: newTargetMs, confidence: _confShift(confidence, -1), memory: fresh };
     }
+    // In-between drift: adopt new target, keep tier and streak count
+    return { targetMs: newTargetMs, confidence,
+             memory: { kind, targetMs: newTargetMs, updatedAtMs: nowMs, stableCount: memory.stableCount } };
+}
 
-    // No upstream result — slope-only prediction; cap at 'med' (no exact-minute claims
-    // without upstream confirmation — slope extrapolation alone has ~56 min start MAE).
+// ── Product 3: Precipitation Trend 0–60 min ──────────────────────────────────
+// Primary signal: edge geometry (sampleEdgeTiming) — leading/trailing echo edge
+// along the storm track ÷ closing speed. Slope timeline is fallback and
+// confirmation. Emitted begin/end minutes are floored by _clampPrecision so we
+// never claim tighter timing than the confidence tier supports.
+
+// PURE — benchmark precision floors: low → ≥15 min, med → ≥10 min.
+function _clampPrecision(minutes, confidence) {
+    if (minutes === null || minutes === undefined) return null;
+    if (confidence === 'low') return Math.max(minutes, 15);
+    if (confidence === 'med') return Math.max(minutes, 10);
+    return minutes;
+}
+
+// PURE — slope tier from timeline wet buckets (legacy logic, capped at med).
+// Returns { minutes, tier, intermittent } or null when slope predicts nothing.
+function _slopeSignal(timeline, isRaining) {
+    if (!timeline) return null;
     const wetBuckets = timeline.filter(b => b.precipClass > 0);
     if (wetBuckets.length === 0) return null;
 
@@ -425,14 +346,207 @@ function _summarizePrecipTimeline(timeline, isRaining, beginInMin, endInMin, tra
         if (wet && !prevWet) runCount++;
         prevWet = wet;
     }
-    if (runCount >= 3) return { text: 'Intermittent rain next hour', confidence: 'low' };
 
     const avgConf = wetBuckets.reduce((s, b) => s + b.confidence, 0) / wetBuckets.length;
     let tier = avgConf >= 0.7 ? 'high' : avgConf >= 0.4 ? 'med' : 'low';
-    if (tier === 'high') tier = 'med'; // slope-only: cap at med without upstream confirmation
-    const firstWet = wetBuckets[0];
-    const start = firstWet.minute;
-    if (tier === 'med')  return { text: `Rain possible in ~${Math.max(0, start - 5)}–${start + 5} min`, confidence: 'med'  };
+    if (tier === 'high') tier = 'med'; // slope-only never exceeds med
+    const minutes = isRaining
+        ? wetBuckets[wetBuckets.length - 1].minute   // last wet bucket ≈ clearing
+        : wetBuckets[0].minute;                      // first wet bucket ≈ onset
+    return { minutes, tier, intermittent: runCount >= 3 };
+}
+
+// PURE — fuse edge + slope for the dry case → { minutes, confidence, method }.
+function _deriveDryTiming(edge, slope, motion) {
+    if (edge && edge.beginInMin !== null) {
+        const slopeAgrees = slope !== null;
+        const fastEnough = motion && motion.speed_kmh >= 10;
+        if (edge.lateralHits >= 2 && fastEnough && slopeAgrees) {
+            return { minutes: edge.beginInMin, confidence: 'high', method: 'edge' };
+        }
+        if (edge.lateralHits >= 2) {
+            return { minutes: edge.beginInMin, confidence: 'med', method: 'edge' };
+        }
+        return { minutes: edge.beginInMin, confidence: 'low', method: 'edge' };
+    }
+    if (slope !== null) {
+        return { minutes: slope.minutes, confidence: slope.tier, method: 'slope' };
+    }
+    return { minutes: null, confidence: 'low', method: 'none' };
+}
+
+// ── RainViewer nowcast consensus ─────────────────────────────────────────────
+const RV_AGREE_MIN    = 10; // |edge − rv| ≤ this → consensus boost
+const RV_DISAGREE_MIN = 20; // |edge − rv| > this → cap edge at med
+
+// PURE — merge RainViewer's model nowcast with the derived timing.
+//   edge + RV agree      → boost one tier, blend 0.7·edge + 0.3·rv ('consensus')
+//   edge + RV disagree   → keep edge (observational geometry wins), cap at med
+//   RV only (method none)→ RV timing at med cap ('rv') — covers stationary /
+//                          cold-start / no-motion cases, incl. internationally
+//   slope / edge-horizon → unchanged (RV never overrides a live-radar signal
+//                          that already has its own fallback semantics)
+function _applyRvConsensus(timing, rvMinutes) {
+    if (rvMinutes === null || rvMinutes === undefined) return timing;
+    if (timing.method === 'edge' && timing.minutes !== null) {
+        const diff = Math.abs(timing.minutes - rvMinutes);
+        if (diff <= RV_AGREE_MIN) {
+            return {
+                minutes: Math.round(0.7 * timing.minutes + 0.3 * rvMinutes),
+                confidence: _confShift(timing.confidence, +1),
+                method: 'consensus',
+            };
+        }
+        if (diff > RV_DISAGREE_MIN && timing.confidence === 'high') {
+            return { minutes: timing.minutes, confidence: 'med', method: 'edge' };
+        }
+        return timing;
+    }
+    if (timing.method === 'none') {
+        return { minutes: rvMinutes, confidence: 'med', method: 'rv' };
+    }
+    return timing;
+}
+
+// PURE — fuse edge + slope for the wet case → { minutes, confidence, method }.
+// 'edge-horizon' = trailing edge beyond march range: rain continues all hour.
+function _deriveWetTiming(edge, slope, motion, edgeAttempted) {
+    if (edge && edge.endInMin !== null) {
+        const fastEnough = motion && motion.speed_kmh >= 10;
+        return { minutes: edge.endInMin, confidence: fastEnough ? 'high' : 'med', method: 'edge' };
+    }
+    // Edge march ran (motion available) but found no trailing edge in range
+    if (edgeAttempted && motion && motion.speed_kmh >= 5) {
+        return { minutes: null, confidence: 'med', method: 'edge-horizon' };
+    }
+    if (slope !== null) {
+        return { minutes: slope.minutes, confidence: slope.tier, method: 'slope' };
+    }
+    return { minutes: null, confidence: 'low', method: 'none' };
+}
+
+async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion) {
+    const timeline = buildPrecipTimeline(currentDbz, isRaining);
+
+    // Slope signal (fallback / confirmation). When the timeline is missing
+    // (< 3 frames), estimateRainTiming can still produce a rough minute value.
+    let slope = _slopeSignal(timeline, isRaining);
+    if (!slope && !timeline) {
+        const t = estimateRainTiming(motion, currentDbz, isRaining);
+        const m = isRaining ? t.endInMin : t.beginInMin;
+        if (m !== null) slope = { minutes: m, tier: 'low', intermittent: false };
+    }
+
+    // Edge-geometry timing (primary)
+    let edge = null;
+    let edgeAttempted = false;
+    if (motion && motion.speed_kmh >= 5) {
+        edgeAttempted = true;
+        try {
+            edge = await sampleEdgeTiming(lat, lon, isUS, motion, isRaining);
+        } catch (err) {
+            console.warn('[Nowcast] Edge timing failed:', err.message);
+            edgeAttempted = false;
+        }
+    }
+
+    let timing = isRaining
+        ? _deriveWetTiming(edge, slope, motion, edgeAttempted)
+        : _deriveDryTiming(edge, slope, motion);
+
+    // RainViewer nowcast cross-check (worldwide, works with no motion vector)
+    try {
+        if (typeof sampleRainviewerNowcast === 'function') {
+            const rvSamples = await sampleRainviewerNowcast(lat, lon);
+            const rvTiming = _deriveRvTiming(rvSamples, isRaining);
+            const rvMinutes = isRaining ? rvTiming.endInMin : rvTiming.beginInMin;
+            timing = _applyRvConsensus(timing, rvMinutes);
+        }
+    } catch (err) {
+        console.warn('[Nowcast] RainViewer nowcast failed:', err.message);
+    }
+
+    // Self-correction: compare against last poll's prediction (memory expires
+    // on its own after 15 min, so a single missed cycle doesn't clear it)
+    const nowMs = Date.now();
+    let rawMinutes = timing.minutes;
+    let confidence = timing.confidence;
+    if (rawMinutes !== null) {
+        const kind = isRaining ? 'end' : 'begin';
+        const applied = _applyPredictionMemory(
+            _predMemory, kind, nowMs + rawMinutes * 60000, confidence, nowMs);
+        _predMemory = applied.memory;
+        rawMinutes = Math.max(0, Math.round((applied.targetMs - nowMs) / 60000));
+        confidence = applied.confidence;
+    }
+
+    const minutes = _clampPrecision(rawMinutes, confidence);
+
+    const summaryResult = _summarizeTrend({
+        timeline, isRaining,
+        minutes,
+        confidence,
+        method: timing.method,
+        intermittent: slope ? slope.intermittent : false,
+        nowMs,
+        utcOffsetSec: (typeof cachedUtcOffsetSec !== 'undefined') ? cachedUtcOffsetSec : null,
+    });
+
+    return {
+        timeline,
+        summary:           summaryResult ? summaryResult.text : null,
+        summaryConfidence: summaryResult ? summaryResult.confidence : 'low',
+        beginInMin: isRaining ? null : minutes,
+        endInMin:   isRaining ? minutes : null,
+        method: timing.method,
+        edge: edge ? {
+            distKm: edge.edgeDistKm,
+            speedKmh: edge.closingSpeedKmh,
+            lateralHits: edge.lateralHits,
+        } : null,
+    };
+}
+
+// ── Trend Summarizer ─────────────────────────────────────────────────────────
+// Converts fused timing into confidence-aware human language.
+// Wording rules (docs/nowcast-rules.txt §8 + benchmark precision checks):
+//   high → clock times rounded to 5 min ("Rain starting ~3:45 PM")
+//   med  → ±5 min ranges ("Rain likely in ~20–30 min")
+//   low  → vague strings only, never minute digits ≤ 10
+// Returns { text, confidence } or null if nothing to say.
+
+function _summarizeTrend({ timeline, isRaining, minutes, confidence, method, intermittent, nowMs, utcOffsetSec }) {
+    // Intermittent cells (3+ wet runs in slope timeline) — slope path only;
+    // the edge march has its own gap handling (EDGE_DRY_GAP_SAMPLES).
+    if (method === 'slope' && intermittent) {
+        return { text: 'Intermittent rain next hour', confidence: 'low' };
+    }
+
+    if (isRaining) {
+        if (minutes === null) {
+            if (method === 'edge-horizon') return { text: 'Rain continuing this hour', confidence: 'med' };
+            if (method === 'none' && !timeline) return { text: 'Rain now, clearing later', confidence: 'low' };
+            return { text: 'Rain now, clearing later', confidence: 'low' };
+        }
+        if (confidence === 'high') {
+            const t = formatClockTimeRounded(nowMs + minutes * 60000, 5, utcOffsetSec);
+            return { text: `Clearing by ~${t}`, confidence: 'high' };
+        }
+        if (confidence === 'med') {
+            return { text: `Rain tapering off in ~${Math.max(5, minutes - 5)}–${minutes + 5} min`, confidence: 'med' };
+        }
+        return { text: 'Rain now, clearing later', confidence: 'low' };
+    }
+
+    // Dry case
+    if (minutes === null) return null;
+    if (confidence === 'high') {
+        const t = formatClockTimeRounded(nowMs + minutes * 60000, 5, utcOffsetSec);
+        return { text: `Rain starting ~${t}`, confidence: 'high' };
+    }
+    if (confidence === 'med') {
+        return { text: `Rain likely in ~${Math.max(5, minutes - 5)}–${minutes + 5} min`, confidence: 'med' };
+    }
     return { text: 'Showers possible soon', confidence: 'low' };
 }
 

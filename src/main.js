@@ -7,6 +7,7 @@ function cleanupLocationState() {
     stopNowcastPolling();
     if (typeof stopLightning === 'function') stopLightning();
     if (typeof resetRadarState === 'function') resetRadarState();
+    if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
 }
 
 const LOCATION_MATCH_DEG = 0.01;
@@ -68,17 +69,12 @@ function renderTabs() {
     if (isTouchDevice) {
         initTouchReorder();
     }
-    _populateCollectSelect();
 }
 
 // Background fetch: temps + nowcast icons for all location tabs.
 let _bgTempRunning = false;
 async function fetchAllLocationTemps() {
     if (_bgTempRunning) return;
-    // Phase 1 fix: skip background fanout while collection mode is active.
-    // Collection mode already cycles through cities and the bg refresh just
-    // duplicates that traffic, doubling the Open-Meteo request load.
-    if (typeof _collectActive !== 'undefined' && _collectActive) return;
     _bgTempRunning = true;
     try {
         for (const loc of savedLocations) {
@@ -91,6 +87,7 @@ async function fetchAllLocationTemps() {
             try {
                 if (typeof resetSkyHysteresis === 'function') resetSkyHysteresis();
                 if (typeof resetRadarState === 'function') resetRadarState();
+                if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
                 const summary = await getNowSummary({
                     lat: loc.lat, lon: loc.lon,
                     country: loc.country || '',
@@ -123,10 +120,7 @@ function startTabRefresh() {
         fetchAllLocationTemps();
     }, 5 * 60 * 1000);
 }
-// Phase 1 fix: stop the background tab refresh. Previously stopCollection()
-// did not clear this interval, so the 5-min background fanout kept hitting
-// Open-Meteo for every saved city long after the user had ended their
-// collection session — this is the "locked out during analysis window" symptom.
+// Stop the 5-min background tab refresh that polls every saved city.
 function stopTabRefresh() {
     if (_tabRefreshInterval) {
         clearInterval(_tabRefreshInterval);
@@ -257,7 +251,7 @@ function switchLocation(index) {
     activeLocation = savedLocations[index];
     saveLocations();
     renderTabs();
-    if (!_collectActive) fetchAllLocationTemps();
+    fetchAllLocationTemps();
     // Use stored coordinates directly - no search needed
     fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
 }
@@ -319,6 +313,7 @@ function toggleGeoMe() {
             stopNowcastPolling();
             if (typeof stopLightning === 'function') stopLightning();
             if (typeof resetRadarState === 'function') resetRadarState();
+            if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
             fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
         }
     } else {
@@ -335,6 +330,7 @@ function toggleGeoMe() {
         stopNowcastPolling();
         if (typeof stopLightning === 'function') stopLightning();
         if (typeof resetRadarState === 'function') resetRadarState();
+        if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
 
         if (lastGeoPosition) {
             activeLocation = lastGeoPosition;
@@ -371,6 +367,7 @@ function _startGeoMeWatch() {
             stopNowcastPolling();
             if (typeof stopLightning === 'function') stopLightning();
             if (typeof resetRadarState === 'function') resetRadarState();
+            if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
             fetchWeatherDataDirect(geoLoc.lat, geoLoc.lon, geoLoc);
         },
         (err) => {
@@ -757,6 +754,7 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 
         // Render as soon as Tier 1 resolves (~500ms)
         const openMeteoData = await tier1Promise;
+        cachedUtcOffsetSec = openMeteoData?.utc_offset_seconds ?? null;
         renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
 
         // Build modelContext from the already-fetched forecast — zero extra
@@ -809,6 +807,19 @@ async function fetchWeatherDataDirect(lat, lon, location) {
                 } catch (_) { /* already logged by fetchAirQuality */ }
             }, 2000);
         }
+
+        // Deferred climatology fetch (precip vs normal tile) — cache-first
+        // render already happened; this refreshes/patches when data lands.
+        // Key guard: don't patch if the user switched cities mid-fetch.
+        setTimeout(async () => {
+            try {
+                const climo = await fetchClimatology(lat, lon, openMeteoData.daily);
+                const key = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
+                const activeKey = activeLocation && activeLocation.lat != null
+                    ? `${activeLocation.lat.toFixed(2)}_${activeLocation.lon.toFixed(2)}` : null;
+                if (climo && activeKey === key) updateClimatologyTile(climo);
+            } catch (_) { /* logged in climatology service */ }
+        }, 2500);
     } catch (error) {
         container.innerHTML = `<div class="card"><div class="alert-title">Error</div><p>${error.message}</p></div>`;
     }
@@ -1194,175 +1205,18 @@ if ('serviceWorker' in navigator) {
 // Load weather on page load
 init();
 
-// Signal acquisition end when the page is closed or navigated away.
-// sendBeacon fires reliably during unload (unlike fetch).
-window.addEventListener('beforeunload', () => {
-    navigator.sendBeacon('/api/acquisition-end', '{}');
-});
-
-// ── Collection mode (local server only) ─────────────────────────────────────
-
-let _collectActive = false;
-let _collectTimer = null;
-let _collectStatusTimer = null;
-let _collectLastSwitched = null;
-let _collectCities = [];
-let _collectSingleCity = false;
-
-// Phase 1 redesign: uniform sequential rotation. The previous design fanned
-// out to ALL cities every 5 min via _batchScanAll() (parallel Open-Meteo
-// pre-screen) and then dwelled longer on "interesting" cities. That biased
-// sampling toward active weather AND added a per-cycle parallel scan that
-// burned ~12·N requests/hour on top of the dwell traffic. Both pieces are
-// removed: the collector simply walks _collectCities one at a time with a
-// fixed 10-min dwell, giving uniform temporal coverage and a predictable
-// upper bound on Open-Meteo load.
-let _activeIdx = 0;             // index into _collectCities
-const COLLECT_DWELL_MS = 10 * 60 * 1000; // 10 min uniform dwell per city
-
-function _populateCollectSelect() {
-    const sel = document.getElementById('collectCitySelect');
-    if (!sel) return;
-    const prev = sel.value;
-    while (sel.options.length > 1) sel.remove(1); // keep "All Cities"
-    savedLocations.forEach(loc => {
-        const opt = document.createElement('option');
-        opt.value = loc.name;
-        opt.textContent = loc.displayName || loc.name;
-        sel.appendChild(opt);
-    });
-    // Restore previous selection if still valid
-    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-}
+// ── Local server detection (shows health-check button when running locally) ──
 
 async function detectLocalServer() {
     try {
         const r = await fetch('/api/cities');
         if (r.ok) {
-            const btn = document.getElementById('collectBtn');
-            const sel = document.getElementById('collectCitySelect');
-            if (btn) btn.style.display = '';
-            if (sel) { sel.style.display = ''; _populateCollectSelect(); }
+            const health = document.getElementById('healthCheckBtn');
+            if (health) health.style.display = '';
         }
-    } catch { /* not running locally — keep button hidden */ }
+    } catch { /* not running locally — keep buttons hidden */ }
 }
 detectLocalServer();
-
-function toggleCollection() {
-    _collectActive ? stopCollection() : startCollection();
-}
-
-function startCollection() {
-    const sel = document.getElementById('collectCitySelect');
-    const chosen = sel && sel.value !== 'all' ? sel.value : null;
-    if (chosen) {
-        const loc = savedLocations.find(l => l.name === chosen);
-        _collectCities = loc ? [loc] : [...savedLocations];
-        _collectSingleCity = !!loc;
-    } else {
-        _collectCities = [...savedLocations];
-        _collectSingleCity = false;
-    }
-    if (!_collectCities.length) return;
-    _collectActive = true;
-    _activeIdx = 0;
-    // Phase 1 fix: pause the background tab refresh while collection runs.
-    // The collector itself cycles through every city; the bg fanout just
-    // duplicates that traffic.
-    stopTabRefresh();
-    _updateCollectBtn();
-    if (typeof setNowcastLoggingEnabled === 'function') setNowcastLoggingEnabled(true);
-    _advanceCollection();
-}
-
-function stopCollection() {
-    _collectActive = false;
-    clearTimeout(_collectTimer);
-    clearInterval(_collectStatusTimer);
-    // Phase 1 fix: also kill the background tab refresh. Without this,
-    // _tabRefreshInterval kept hitting Open-Meteo every 5 min for every
-    // saved city long after the user clicked End — the proximate cause
-    // of the "locked out during analysis window" lockouts.
-    stopTabRefresh();
-    _updateCollectBtn();
-    if (typeof setNowcastLoggingEnabled === 'function') setNowcastLoggingEnabled(false);
-    fetch('/api/acquisition-end', { method: 'POST' }).catch(() => {});
-}
-
-async function _advanceCollection() {
-    if (!_collectActive) return;
-
-    // Single-city mode: dwell on the only city, refresh once a minute.
-    if (_collectSingleCity) {
-        const city = _collectCities[0];
-        const liveIdx = savedLocations.findIndex(
-            l => l.name === city.name || (l.lat === city.lat && l.lon === city.lon)
-        );
-        if (liveIdx >= 0) switchLocation(liveIdx);
-        _collectLastSwitched = new Date();
-        _updateCollectStatus();
-        _collectTimer = setTimeout(_advanceCollection, 60_000);
-        return;
-    }
-
-    // Sequential rotation across all collection cities. Uniform dwell.
-    const city = _collectCities[_activeIdx];
-    _activeIdx = (_activeIdx + 1) % _collectCities.length;
-
-    const liveIdx = savedLocations.findIndex(
-        l => l.name === city.name || (l.lat === city.lat && l.lon === city.lon)
-    );
-    if (liveIdx >= 0) switchLocation(liveIdx);
-    _collectLastSwitched = new Date();
-    _updateCollectStatus();
-    _collectTimer = setTimeout(_advanceCollection, COLLECT_DWELL_MS);
-}
-
-function _updateCollectStatus() {
-    const el = document.getElementById('collectStatus');
-    if (!el) return;
-    if (!_collectActive) { el.style.display = 'none'; return; }
-    el.style.display = '';
-    if (_collectSingleCity) {
-        const city = _collectCities[0];
-        const name = city ? (city.displayName || city.name || '?') : '?';
-        const t = _collectLastSwitched
-            ? _collectLastSwitched.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-            : '--:--';
-        el.textContent = `${name} · ${t}`;
-        return;
-    }
-    if (!_collectCities.length) {
-        el.textContent = '0 cities';
-        return;
-    }
-    const prevIdx = (_activeIdx - 1 + _collectCities.length) % _collectCities.length;
-    const city = _collectCities[prevIdx];
-    const name = city ? (city.displayName || city.name || '?') : '?';
-    const t = _collectLastSwitched
-        ? _collectLastSwitched.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-        : '--:--';
-    el.textContent = `${name} · ${prevIdx + 1}/${_collectCities.length} · ${t}`;
-}
-
-function _updateCollectBtn() {
-    const btn = document.getElementById('collectBtn');
-    const status = document.getElementById('collectStatus');
-    const health = document.getElementById('healthCheckBtn');
-    if (!btn) return;
-    if (_collectActive) {
-        btn.textContent = '⏹ Stop';
-        btn.classList.add('active');
-        if (health) health.style.display = '';
-        _collectStatusTimer = setInterval(_updateCollectStatus, 5000);
-    } else {
-        btn.textContent = '⏺ Collect';
-        btn.classList.remove('active');
-        if (health) health.style.display = 'none';
-        clearInterval(_collectStatusTimer);
-        if (status) { status.style.display = 'none'; status.textContent = ''; }
-    }
-}
 
 // ── Health check (runs weather_benchmark/health_check.py on the VM) ─────────
 

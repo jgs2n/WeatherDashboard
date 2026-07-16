@@ -4,7 +4,7 @@
 //
 // Exports (globals): sampleRadarAtPoint, loadRadarHistory, getRadarFrames,
 //                    estimateMotionVector, estimateRainTiming, buildPrecipTimeline,
-//                    sampleUpstreamTimeline
+//                    sampleEdgeTiming, beginSampleCycle, resetRadarState
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -31,6 +31,16 @@ const RADAR_CFG = {
     MAX_COLOR_DIST:     12000,   // max squared RGB distance for palette match
     SLOPE_FRAMES:       6,       // frames used for regression (~30 min)
     MIN_SLOPE_DBZ:      2,       // dBZ/frame minimum meaningful slope
+    MOTION_GRID:        9,       // binary correlation grid size (9×9)
+    MOTION_MAX_SHIFT:   4,       // ± cells searched — resolves ~107 km/h at 5-min cadence
+    MOTION_MIN_OVERLAP: 3,       // min overlap score to accept a shift
+    EDGE_STEP_KM:           2,   // upstream march step (~1 px at zoom 6)
+    EDGE_MAX_LOOKAHEAD_MIN: 60,  // don't predict past the hour
+    EDGE_MAX_RANGE_KM:      120, // march distance cap
+    EDGE_WET_RUN_SAMPLES:   2,   // sustained-wet run to declare leading edge
+    EDGE_DRY_GAP_SAMPLES:   4,   // ~8 km sustained dry to declare trailing edge
+    EDGE_DRY_DBZ:           15,  // below this counts as dry for trailing edge
+    EDGE_LATERAL_KM:        3,   // ± km perpendicular spread for track check
     BEGIN_SIGNAL_DBZ:   18,      // min dBZ in any recent frame to allow "begin" prediction
     END_SIGNAL_DBZ:     30,      // min dBZ in any recent frame to allow "end" prediction
     IEM_BASE:           'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0',
@@ -47,6 +57,18 @@ let _lastValidDbzTime = null; // Date.now() when last non-null dBZ was received
 let _pendingOnCount = 0;
 let _radarHistoryLoaded = false;
 let _radarHistoryPending = null;
+
+// Per-poll decoded-tile cache: url → Promise<ImageData|null>.
+// One zoom-6 tile spans ~600 km, so the motion grid and upstream march mostly
+// hit the same tile — caching collapses dozens of redundant decode+draw cycles
+// per poll into a handful. Cleared by beginSampleCycle() so each poll sees
+// fresh tiles.
+let _tileCache = new Map();
+
+// Clear the tile cache — call once at the start of each nowcast poll cycle.
+function beginSampleCycle() {
+    _tileCache.clear();
+}
 
 // Shared canvas for pixel sampling (created once, never appended to DOM)
 let _sampleCanvas = null;
@@ -91,33 +113,62 @@ function _loadImage(url) {
     });
 }
 
+// ── Tile URL + decoded-tile cache ────────────────────────────────────────────
+
+// Build the tile URL for a frame (IEM NEXRAD or RainViewer). Returns null if
+// frameInfo doesn't describe a fetchable frame.
+function _frameUrl(isUS, frameInfo, tileX, tileY) {
+    if (isUS && frameInfo.iemTs) {
+        return `${RADAR_CFG.IEM_BASE}/ridge::USCOMP-N0Q-${frameInfo.iemTs}/${RADAR_CFG.ZOOM}/${tileX}/${tileY}.png`;
+    }
+    if (frameInfo.rvHost && frameInfo.rvPath) {
+        // color=2 (universal blue), smooth=1, snow=1
+        return `${frameInfo.rvHost}${frameInfo.rvPath}/${RADAR_CFG.TILE_SIZE}/${RADAR_CFG.ZOOM}/${tileX}/${tileY}/2/1_1.png`;
+    }
+    return null;
+}
+
+// Load + decode a tile to ImageData, memoized per poll cycle. Stores the
+// promise so concurrent requests for the same tile share one fetch.
+function _getTileImageData(url) {
+    if (_tileCache.has(url)) return _tileCache.get(url);
+    const p = _loadImage(url).then((img) => {
+        if (!img) return null;
+        const { canvas, ctx } = _getCanvas();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, RADAR_CFG.TILE_SIZE, RADAR_CFG.TILE_SIZE);
+        return ctx.getImageData(0, 0, RADAR_CFG.TILE_SIZE, RADAR_CFG.TILE_SIZE);
+    });
+    _tileCache.set(url, p);
+    return p;
+}
+
 // ── Pixel sampling ───────────────────────────────────────────────────────────
 
 // Sample a (2r+1)×(2r+1) neighborhood and return the median dBZ (or null).
 // Requires at least MIN_VALID_PIXELS valid pixels to return a result.
 // Median is robust against isolated artifact pixels that max would amplify.
-function _sampleNeighborhood(img, pxX, pxY, radius) {
-    const { canvas, ctx } = _getCanvas();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, RADAR_CFG.TILE_SIZE, RADAR_CFG.TILE_SIZE);
-
+function _sampleNeighborhood(imgData, pxX, pxY, radius) {
+    const size = RADAR_CFG.TILE_SIZE;
     const x0 = Math.max(0, pxX - radius);
     const y0 = Math.max(0, pxY - radius);
-    const x1 = Math.min(RADAR_CFG.TILE_SIZE - 1, pxX + radius);
-    const y1 = Math.min(RADAR_CFG.TILE_SIZE - 1, pxY + radius);
-    const w = x1 - x0 + 1;
-    const h = y1 - y0 + 1;
-    const imgData = ctx.getImageData(x0, y0, w, h).data;
+    const x1 = Math.min(size - 1, pxX + radius);
+    const y1 = Math.min(size - 1, pxY + radius);
+    const data = imgData.data;
 
     const valid = [];
-    let _debugGray = 0, _debugDist = 0, _debugMatch = 0;
-    for (let i = 0; i < w * h; i++) {
-        const dbz = _colorToDBZ(imgData[i * 4], imgData[i * 4 + 1], imgData[i * 4 + 2], imgData[i * 4 + 3]);
-        if (dbz !== null) {
-            valid.push(dbz);
-            _debugMatch++;
+    let _debugMatch = 0;
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+            const i = (y * size + x) * 4;
+            const dbz = _colorToDBZ(data[i], data[i + 1], data[i + 2], data[i + 3]);
+            if (dbz !== null) {
+                valid.push(dbz);
+                _debugMatch++;
+            }
         }
     }
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
 
     if (RADAR_CFG.DEBUG && (valid.length > 0 || _debugMatch > 0)) {
         console.debug(`[RadarSampler] neighborhood ${w}x${h}: ${valid.length} valid, matched=${_debugMatch}`);
@@ -225,11 +276,6 @@ function _iemTimestamps(count) {
     return stamps;
 }
 
-async function _fetchIEMTile(timestamp, z, x, y) {
-    const url = `${RADAR_CFG.IEM_BASE}/ridge::USCOMP-N0Q-${timestamp}/${z}/${x}/${y}.png`;
-    return _loadImage(url);
-}
-
 // ── RainViewer (worldwide) ───────────────────────────────────────────────────
 
 let _rvMapsCache = { data: null, ts: null };
@@ -251,27 +297,18 @@ async function _fetchRainViewerMaps() {
     }
 }
 
-async function _fetchRVTile(host, path, z, x, y) {
-    // color=2 (universal blue), smooth=1, snow=1
-    const url = `${host}${path}/${RADAR_CFG.TILE_SIZE}/${z}/${x}/${y}/2/1_1.png`;
-    return _loadImage(url);
-}
-
 // ── Sample a single frame at a point ─────────────────────────────────────────
 
 async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
     const { tileX, tileY, pxX, pxY } = _latLonToTile(lat, lon, RADAR_CFG.ZOOM);
 
-    let img;
-    if (isUS && frameInfo.iemTs) {
-        img = await _fetchIEMTile(frameInfo.iemTs, RADAR_CFG.ZOOM, tileX, tileY);
-    } else if (frameInfo.rvHost && frameInfo.rvPath) {
-        img = await _fetchRVTile(frameInfo.rvHost, frameInfo.rvPath, RADAR_CFG.ZOOM, tileX, tileY);
-    }
-    if (!img) return null;
+    const url = _frameUrl(isUS, frameInfo, tileX, tileY);
+    if (!url) return null;
+    const imgData = await _getTileImageData(url);
+    if (!imgData) return null;
 
     const r = RADAR_CFG.NEIGHBORHOOD_RADIUS;
-    let dbz = _sampleNeighborhood(img, pxX, pxY, r);
+    let dbz = _sampleNeighborhood(imgData, pxX, pxY, r);
 
     // Edge handling: if near tile boundary and neighborhood found nothing, try neighbor tile
     if (dbz === null && (
@@ -282,17 +319,45 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
         if (neighborX !== tileX || neighborY !== tileY) {
             const nPxX = pxX < RADAR_CFG.EDGE_MARGIN ? RADAR_CFG.TILE_SIZE - 1 - r : (pxX > RADAR_CFG.TILE_SIZE - RADAR_CFG.EDGE_MARGIN ? r : pxX);
             const nPxY = pxY < RADAR_CFG.EDGE_MARGIN ? RADAR_CFG.TILE_SIZE - 1 - r : (pxY > RADAR_CFG.TILE_SIZE - RADAR_CFG.EDGE_MARGIN ? r : pxY);
-            let nImg;
-            if (isUS && frameInfo.iemTs) {
-                nImg = await _fetchIEMTile(frameInfo.iemTs, RADAR_CFG.ZOOM, neighborX, neighborY);
-            } else if (frameInfo.rvHost && frameInfo.rvPath) {
-                nImg = await _fetchRVTile(frameInfo.rvHost, frameInfo.rvPath, RADAR_CFG.ZOOM, neighborX, neighborY);
-            }
-            if (nImg) dbz = _sampleNeighborhood(nImg, nPxX, nPxY, r);
+            const nUrl = _frameUrl(isUS, frameInfo, neighborX, neighborY);
+            const nData = nUrl ? await _getTileImageData(nUrl) : null;
+            if (nData) dbz = _sampleNeighborhood(nData, nPxX, nPxY, r);
         }
     }
 
     return dbz;
+}
+
+// ── Latest frame lookup (shared by sampler, motion, upstream) ────────────────
+// Returns { frameInfo, timestamp } for the most recent available frame, or null.
+
+async function _latestFrameInfo(isUS) {
+    if (isUS) {
+        const stamps = _iemTimestamps(1);
+        return { frameInfo: { iemTs: stamps[0].ts }, timestamp: stamps[0].time };
+    }
+    const maps = await _fetchRainViewerMaps();
+    if (!maps || !maps.radar || !maps.radar.past || maps.radar.past.length === 0) return null;
+    const latest = maps.radar.past[maps.radar.past.length - 1];
+    return { frameInfo: { rvHost: maps.host, rvPath: latest.path }, timestamp: latest.time };
+}
+
+// Reconstruct frameInfo for a historical frame from _radarFrames.
+async function _histFrameInfo(isUS, frame) {
+    if (isUS) {
+        const t = new Date(frame.timestamp * 1000);
+        const ts = t.getUTCFullYear().toString() +
+            String(t.getUTCMonth() + 1).padStart(2, '0') +
+            String(t.getUTCDate()).padStart(2, '0') +
+            String(t.getUTCHours()).padStart(2, '0') +
+            String(Math.floor(t.getUTCMinutes() / 5) * 5).padStart(2, '0');
+        return { iemTs: ts };
+    }
+    const maps = await _fetchRainViewerMaps();
+    if (!maps || !maps.radar || !maps.radar.past) return null;
+    const match = maps.radar.past.find(f => f.time === frame.timestamp);
+    if (!match) return null;
+    return { rvHost: maps.host, rvPath: match.path };
 }
 
 // ── Hysteresis state machine ─────────────────────────────────────────────────
@@ -425,19 +490,10 @@ async function sampleRadarAtPoint(lat, lon, isUS) {
     let source = isUS ? 'NEXRAD' : 'RainViewer';
 
     try {
-        if (isUS) {
-            const stamps = _iemTimestamps(1);
-            dbz = await _sampleFrameAtPoint(lat, lon, true, { iemTs: stamps[0].ts });
-            timestamp = stamps[0].time;
-        } else {
-            const maps = await _fetchRainViewerMaps();
-            if (maps && maps.radar && maps.radar.past && maps.radar.past.length > 0) {
-                const latest = maps.radar.past[maps.radar.past.length - 1];
-                dbz = await _sampleFrameAtPoint(lat, lon, false, {
-                    rvHost: maps.host, rvPath: latest.path
-                });
-                timestamp = latest.time;
-            }
+        const latest = await _latestFrameInfo(isUS);
+        if (latest) {
+            dbz = await _sampleFrameAtPoint(lat, lon, isUS, latest.frameInfo);
+            timestamp = latest.timestamp;
         }
     } catch (err) {
         console.warn('[RadarSampler] Sample failed:', err.message);
@@ -483,11 +539,69 @@ function resetRadarState() {
     _radarHistoryLoaded  = false;
     _radarHistoryPending = null;
     _radarFrames         = [];
+    _tileCache.clear();
 }
 
 // ── Motion Vector Estimation (coarse correlation) ────────────────────────────
 // Samples a grid around the point for multiple frames, finds best shift via
-// binary mask overlap. Returns null if motion is inconsistent.
+// binary mask overlap with parabolic sub-cell refinement. Returns null if
+// motion is inconsistent. 9×9 grid with ±4-cell search resolves ~107 km/h
+// (the old 5×5/±2 saturated at ~53 km/h — squall lines clipped or failed).
+
+// Sample a gridSize×gridSize binary rain mask centered on (lat, lon).
+async function _sampleBinaryGrid(lat, lon, isUS, frameInfo, gridSize, spacingDeg) {
+    const half = Math.floor(gridSize / 2);
+    const grid = [];
+    for (let gy = 0; gy < gridSize; gy++) {
+        for (let gx = 0; gx < gridSize; gx++) {
+            const gLat = lat + (gy - half) * spacingDeg;
+            const gLon = lon + (gx - half) * spacingDeg;
+            const dbz = await _sampleFrameAtPoint(gLat, gLon, isUS, frameInfo);
+            grid.push(dbz !== null && dbz >= RADAR_CFG.OFF_THRESHOLD ? 1 : 0);
+        }
+    }
+    return grid;
+}
+
+// Best binary-overlap shift between two masks. Returns the full score surface
+// for sub-cell refinement.
+function _bestShift(prev, curr, gridSize, maxShift) {
+    const dim = 2 * maxShift + 1;
+    const scores = new Array(dim * dim).fill(0);
+    let bestScore = -1, bestDx = 0, bestDy = 0;
+    for (let dy = -maxShift; dy <= maxShift; dy++) {
+        for (let dx = -maxShift; dx <= maxShift; dx++) {
+            let score = 0;
+            for (let gy = 0; gy < gridSize; gy++) {
+                for (let gx = 0; gx < gridSize; gx++) {
+                    const sy = gy + dy;
+                    const sx = gx + dx;
+                    if (sy < 0 || sy >= gridSize || sx < 0 || sx >= gridSize) continue;
+                    if (prev[sy * gridSize + sx] === 1 && curr[gy * gridSize + gx] === 1) score++;
+                }
+            }
+            scores[(dy + maxShift) * dim + (dx + maxShift)] = score;
+            if (score > bestScore) { bestScore = score; bestDx = dx; bestDy = dy; }
+        }
+    }
+    return { dx: bestDx, dy: bestDy, score: bestScore, scores, dim };
+}
+
+// Parabolic peak interpolation on the score surface around the best shift.
+// Halves the per-cell speed quantization (~13 km/h residual at 2 km / 5 min).
+function _refineSubcell(shift, maxShift) {
+    const { scores, dim } = shift;
+    const cx = shift.dx + maxShift, cy = shift.dy + maxShift;
+    const at = (x, y) => (x < 0 || x >= dim || y < 0 || y >= dim) ? 0 : scores[y * dim + x];
+    let fx = 0, fy = 0;
+    const denX = at(cx - 1, cy) - 2 * at(cx, cy) + at(cx + 1, cy);
+    if (denX < 0) fx = 0.5 * (at(cx - 1, cy) - at(cx + 1, cy)) / denX;
+    const denY = at(cx, cy - 1) - 2 * at(cx, cy) + at(cx, cy + 1);
+    if (denY < 0) fy = 0.5 * (at(cx, cy - 1) - at(cx, cy + 1)) / denY;
+    fx = Math.max(-0.5, Math.min(0.5, fx));
+    fy = Math.max(-0.5, Math.min(0.5, fy));
+    return { dx: shift.dx + fx, dy: shift.dy + fy };
+}
 
 async function estimateMotionVector(lat, lon, isUS) {
     if (_radarFrames.length < 3) return null;
@@ -497,113 +611,78 @@ async function estimateMotionVector(lat, lon, isUS) {
     const withData = recent.filter(f => f.dbz !== null);
     if (withData.length < 2) return null;
 
-    // Sample a 5x5 grid around the point for each frame
-    const gridSize = 5;
-    const gridSpacingDeg = 0.02; // ~2km at mid-latitudes
+    const gridSize = RADAR_CFG.MOTION_GRID;
+    const maxShift = RADAR_CFG.MOTION_MAX_SHIFT;
+    // RainViewer frames are 10 min apart (vs IEM 5) — double the spacing so the
+    // same ±maxShift window covers the same speed range.
+    const spacingDeg = isUS ? 0.02 : 0.04;
+
     const grids = [];
-
     for (const frame of recent) {
-        const grid = [];
-        for (let gy = 0; gy < gridSize; gy++) {
-            for (let gx = 0; gx < gridSize; gx++) {
-                const gLat = lat + (gy - 2) * gridSpacingDeg;
-                const gLon = lon + (gx - 2) * gridSpacingDeg;
-
-                let frameInfo;
-                if (isUS) {
-                    // Reconstruct IEM timestamp from unix time
-                    const t = new Date(frame.timestamp * 1000);
-                    const ts = t.getUTCFullYear().toString() +
-                        String(t.getUTCMonth() + 1).padStart(2, '0') +
-                        String(t.getUTCDate()).padStart(2, '0') +
-                        String(t.getUTCHours()).padStart(2, '0') +
-                        String(Math.floor(t.getUTCMinutes() / 5) * 5).padStart(2, '0');
-                    frameInfo = { iemTs: ts };
-                } else {
-                    const maps = await _fetchRainViewerMaps();
-                    if (!maps) return null;
-                    const matchFrame = maps.radar.past.find(f => f.time === frame.timestamp);
-                    if (!matchFrame) continue;
-                    frameInfo = { rvHost: maps.host, rvPath: matchFrame.path };
-                }
-
-                const dbz = await _sampleFrameAtPoint(gLat, gLon, isUS, frameInfo);
-                grid.push(dbz !== null && dbz >= RADAR_CFG.OFF_THRESHOLD ? 1 : 0);
-            }
-        }
-        grids.push(grid);
+        const frameInfo = await _histFrameInfo(isUS, frame);
+        if (!frameInfo) { grids.push(null); continue; }
+        grids.push(await _sampleBinaryGrid(lat, lon, isUS, frameInfo, gridSize, spacingDeg));
     }
 
-    if (grids.length < 2) return null;
-
-    // Coarse correlation: find best shift between consecutive frame pairs
-    const shifts = [];
+    // Per-pair velocity vectors (km/h) — intervals come from frame timestamps,
+    // so RainViewer's 10-min cadence no longer inflates speed 2×.
+    const gridSpacingKm = spacingDeg * 111;
+    const velocities = [];
+    let sumDx = 0, sumDy = 0;
     for (let p = 0; p < grids.length - 1; p++) {
         const prev = grids[p];
         const curr = grids[p + 1];
-
-        // Check if either frame has any rain pixels
+        if (!prev || !curr) continue;
         if (prev.reduce((a, b) => a + b, 0) < 2 || curr.reduce((a, b) => a + b, 0) < 2) {
             continue; // Not enough rain to correlate
         }
 
-        let bestScore = -1;
-        let bestDx = 0, bestDy = 0;
+        const shift = _bestShift(prev, curr, gridSize, maxShift);
+        if (shift.score < RADAR_CFG.MOTION_MIN_OVERLAP) continue;
+        const refined = _refineSubcell(shift, maxShift);
 
-        // Search over ±2 pixel shifts
-        for (let dy = -2; dy <= 2; dy++) {
-            for (let dx = -2; dx <= 2; dx++) {
-                let score = 0;
-                for (let gy = 0; gy < gridSize; gy++) {
-                    for (let gx = 0; gx < gridSize; gx++) {
-                        const sy = gy + dy;
-                        const sx = gx + dx;
-                        if (sy < 0 || sy >= gridSize || sx < 0 || sx >= gridSize) continue;
-                        // Overlap: shifted prev[sy*5+sx] matches curr[gy*5+gx]
-                        if (prev[sy * gridSize + sx] === 1 && curr[gy * gridSize + gx] === 1) {
-                            score++;
-                        }
-                    }
-                }
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestDx = dx;
-                    bestDy = dy;
-                }
-            }
-        }
+        let intervalMin = (recent[p + 1].timestamp - recent[p].timestamp) / 60;
+        if (!(intervalMin > 0)) intervalMin = isUS ? 5 : 10;
 
-        if (bestScore >= 2) {
-            shifts.push({ dx: bestDx, dy: bestDy });
-        }
+        // The shift d aligns prev→curr as curr(g) ≈ prev(g + d), so true storm
+        // motion = −d. Grid axes: +x = east, +y = north (see _sampleBinaryGrid).
+        // (The pre-v1.46.0 code skipped this negation and mixed math/compass
+        // conventions downstream — upstream sampling pointed 90° off.)
+        velocities.push({
+            vE: -refined.dx * gridSpacingKm / (intervalMin / 60),
+            vN: -refined.dy * gridSpacingKm / (intervalMin / 60),
+        });
+        sumDx += refined.dx;
+        sumDy += refined.dy;
     }
 
-    if (shifts.length === 0) return null;
+    if (velocities.length === 0) return null;
 
-    // If we have 2 shifts, check consistency
-    if (shifts.length === 2) {
-        const dir1 = Math.atan2(shifts[0].dy, shifts[0].dx);
-        const dir2 = Math.atan2(shifts[1].dy, shifts[1].dx);
+    // If we have 2 velocity vectors, check direction consistency
+    if (velocities.length === 2) {
+        const dir1 = Math.atan2(velocities[0].vN, velocities[0].vE);
+        const dir2 = Math.atan2(velocities[1].vN, velocities[1].vE);
         const angleDiff = Math.abs(dir1 - dir2);
         if (angleDiff > Math.PI / 4 && angleDiff < 7 * Math.PI / 4) {
             return null; // Inconsistent direction — growth-in-place or chaotic
         }
     }
 
-    // Average the shifts
-    const avgDx = shifts.reduce((s, v) => s + v.dx, 0) / shifts.length;
-    const avgDy = shifts.reduce((s, v) => s + v.dy, 0) / shifts.length;
-
-    // Convert grid units to approximate km/h
-    // At 5-min frame intervals and ~2km grid spacing
-    const frameIntervalMin = 5;
-    const gridSpacingKm = gridSpacingDeg * 111; // rough conversion
-    const speed = Math.sqrt(avgDx ** 2 + avgDy ** 2) * gridSpacingKm / (frameIntervalMin / 60);
-    const direction = (Math.atan2(-avgDy, avgDx) * 180 / Math.PI + 360) % 360;
+    const avgVE = velocities.reduce((s, v) => s + v.vE, 0) / velocities.length;
+    const avgVN = velocities.reduce((s, v) => s + v.vN, 0) / velocities.length;
+    const speed = Math.sqrt(avgVE ** 2 + avgVN ** 2);
+    // Compass heading the storm is moving TOWARD (0 = N, 90 = E) — the
+    // convention the upstream bearing math (cos→north, sin→east) expects.
+    const direction = (Math.atan2(avgVE, avgVN) * 180 / Math.PI + 360) % 360;
 
     if (speed < 1) return null; // Essentially stationary
 
-    return { dx: avgDx, dy: avgDy, speed_kmh: Math.round(speed), direction_deg: Math.round(direction) };
+    return {
+        dx: sumDx / velocities.length,
+        dy: sumDy / velocities.length,
+        speed_kmh: Math.round(speed),
+        direction_deg: Math.round(direction),
+    };
 }
 
 // ── Slope Helpers ─────────────────────────────────────────────────────────────
@@ -726,94 +805,168 @@ function buildPrecipTimeline(currentDbz, isRaining) {
     });
 }
 
-// ── Upstream Sampling (Lagrangian advection, dry-case only) ──────────────────
-// For each lookahead bucket, computes the point that is currently upstream
-// along the motion vector by distance = speed × (t/60) km.  Samples the
-// current (latest) radar frame at that point plus ±LATERAL_KM perpendicular
-// spread for a track-over-point check.
-//
-// Returns an array of bucket results:
-//   { minute, centerDbz, lateralHits, upstreamLat, upstreamLon }
-//   lateralHits: how many of the 3 spread points (center + ±lateral) show dBZ ≥ 18.
-//
-// Returns null if motion vector is missing or too slow.
+// ── Edge Timing (Lagrangian advection along the storm track) ─────────────────
+// Marches upstream along the motion vector on the latest frame, finds the
+// leading edge (dry case) or trailing edge (wet case) of the echo, and derives
+// arrival/clearing time from edge distance ÷ closing speed. This is geometry,
+// not slope extrapolation — the core of the 5–10 min timing accuracy.
 
-const UPSTREAM_LATERAL_KM = 3; // ±km perpendicular spread for track check
-
-async function sampleUpstreamTimeline(lat, lon, isUS, motion, buckets = [10, 20, 30]) {
-    if (!motion || motion.speed_kmh < 5) return null;
-
-    // Latest frameInfo — needed to call _sampleFrameAtPoint
-    let latestFrameInfo = null;
-    if (isUS) {
-        const stamps = _iemTimestamps(1);
-        latestFrameInfo = { iemTs: stamps[0].ts };
-    } else {
-        const maps = await _fetchRainViewerMaps();
-        if (!maps || !maps.radar || !maps.radar.past || maps.radar.past.length === 0) return null;
-        const latest = maps.radar.past[maps.radar.past.length - 1];
-        latestFrameInfo = { rvHost: maps.host, rvPath: latest.path };
-    }
-
-    // Upstream bearing: opposite of motion direction
-    const upstreamBearing = ((motion.direction_deg + 180) % 360) * Math.PI / 180;
-    const latRad = lat * Math.PI / 180;
+// Point at distKm upstream of (lat, lon) along motion.direction_deg (compass
+// heading storm moves toward), offset lateralKm perpendicular to the track.
+function _upstreamPoint(lat, lon, directionDeg, distKm, lateralKm) {
+    const upB = ((directionDeg + 180) % 360) * Math.PI / 180;   // compass: 0=N
+    const perpB = upB + Math.PI / 2;
     const kmPerDegLat = 111;
-    const kmPerDegLon = 111 * Math.cos(latRad);
+    const kmPerDegLon = 111 * Math.cos(lat * Math.PI / 180);
+    return {
+        lat: lat + (distKm * Math.cos(upB) + lateralKm * Math.cos(perpB)) / kmPerDegLat,
+        lon: lon + (distKm * Math.sin(upB) + lateralKm * Math.sin(perpB)) / kmPerDegLon,
+    };
+}
 
-    // Perpendicular bearing (90° offset from upstream)
-    const perpBearing = (((motion.direction_deg + 180) % 360) + 90) * Math.PI / 180;
+// Sample the latest frame along the upstream ray. Returns [{ distKm, dbz }].
+// Max distance = what the storm covers in EDGE_MAX_LOOKAHEAD_MIN, capped.
+async function _marchUpstream(lat, lon, isUS, motion, frameInfo) {
+    const maxKm = Math.min(
+        motion.speed_kmh * (RADAR_CFG.EDGE_MAX_LOOKAHEAD_MIN / 60),
+        RADAR_CFG.EDGE_MAX_RANGE_KM
+    );
+    const profile = [];
+    for (let distKm = 0; distKm <= maxKm; distKm += RADAR_CFG.EDGE_STEP_KM) {
+        const p = _upstreamPoint(lat, lon, motion.direction_deg, distKm, 0);
+        let dbz = null;
+        try {
+            dbz = await _sampleFrameAtPoint(p.lat, p.lon, isUS, frameInfo);
+        } catch (_) { /* treat as no echo */ }
+        profile.push({ distKm, dbz });
+    }
+    return profile;
+}
 
-    const results = [];
-
-    for (const minute of buckets) {
-        const distKm = motion.speed_kmh * (minute / 60);
-
-        // Center upstream point
-        const uLat = lat + (distKm * Math.cos(upstreamBearing)) / kmPerDegLat;
-        const uLon = lon + (distKm * Math.sin(upstreamBearing)) / kmPerDegLon;
-
-        // Three spread points: center, +lateral, -lateral
-        const spreadPoints = [
-            { sLat: uLat, sLon: uLon },
-            {
-                sLat: uLat + (UPSTREAM_LATERAL_KM * Math.cos(perpBearing)) / kmPerDegLat,
-                sLon: uLon + (UPSTREAM_LATERAL_KM * Math.sin(perpBearing)) / kmPerDegLon,
-            },
-            {
-                sLat: uLat - (UPSTREAM_LATERAL_KM * Math.cos(perpBearing)) / kmPerDegLat,
-                sLon: uLon - (UPSTREAM_LATERAL_KM * Math.sin(perpBearing)) / kmPerDegLon,
-            },
-        ];
-
-        let centerDbz = null;
-        let lateralHits = 0;
-
-        for (let i = 0; i < spreadPoints.length; i++) {
-            const { sLat, sLon } = spreadPoints[i];
-            try {
-                const dbz = await _sampleFrameAtPoint(sLat, sLon, isUS, latestFrameInfo);
-                if (i === 0) centerDbz = dbz;
-                if (dbz !== null && dbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ) lateralHits++;
-            } catch (_) {
-                // treat as null — no rain signal
-            }
+// PURE — leading edge: start of the first run of ≥ EDGE_WET_RUN_SAMPLES
+// consecutive samples at ≥ BEGIN_SIGNAL_DBZ. Returns { distKm } or null.
+function _findLeadingEdge(profile) {
+    let run = 0;
+    for (let i = 0; i < profile.length; i++) {
+        const wet = profile[i].dbz !== null && profile[i].dbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ;
+        if (!wet) { run = 0; continue; }
+        run++;
+        if (run >= RADAR_CFG.EDGE_WET_RUN_SAMPLES) {
+            return { distKm: profile[i - run + 1].distKm };
         }
+    }
+    return null;
+}
 
-        results.push({ minute, centerDbz, lateralHits, upstreamLat: uLat, upstreamLon: uLon });
+// PURE — trailing edge: start of the first run of ≥ EDGE_DRY_GAP_SAMPLES
+// consecutive dry samples (dBZ < EDGE_DRY_DBZ or no echo). The gap length
+// requirement (~8 km) keeps a small hole inside a storm complex from reading
+// as clearing. Returns { distKm, wetExtentKm } or null (rain past horizon).
+function _findTrailingEdge(profile) {
+    let dryRun = 0;
+    for (let i = 0; i < profile.length; i++) {
+        const dry = profile[i].dbz === null || profile[i].dbz < RADAR_CFG.EDGE_DRY_DBZ;
+        if (!dry) { dryRun = 0; continue; }
+        dryRun++;
+        if (dryRun >= RADAR_CFG.EDGE_DRY_GAP_SAMPLES) {
+            const edgeIdx = i - dryRun + 1;
+            return {
+                distKm: profile[edgeIdx].distKm,
+                wetExtentKm: edgeIdx > 0 ? profile[edgeIdx - 1].distKm : 0,
+            };
+        }
+    }
+    return null;
+}
+
+// Track-over-point check at the edge: center + ±EDGE_LATERAL_KM perpendicular.
+// Returns 0–3 hits at ≥ BEGIN_SIGNAL_DBZ.
+async function _lateralSpreadHits(lat, lon, isUS, frameInfo, motion, distKm) {
+    let hits = 0;
+    for (const lateral of [0, RADAR_CFG.EDGE_LATERAL_KM, -RADAR_CFG.EDGE_LATERAL_KM]) {
+        const p = _upstreamPoint(lat, lon, motion.direction_deg, distKm, lateral);
+        try {
+            const dbz = await _sampleFrameAtPoint(p.lat, p.lon, isUS, frameInfo);
+            if (dbz !== null && dbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ) hits++;
+        } catch (_) { /* no hit */ }
+    }
+    return hits;
+}
+
+// PUBLIC — edge-geometry timing. Dry case → beginInMin from the leading edge;
+// wet case → endInMin from the trailing edge. Returns null when motion is
+// missing/too slow, no edge is found in range, or the profile has no data at
+// all (likely tile failure — don't mistake it for instant clearing).
+async function sampleEdgeTiming(lat, lon, isUS, motion, isRaining) {
+    if (!motion || motion.speed_kmh < 5) return null;
+    const latest = await _latestFrameInfo(isUS);
+    if (!latest) return null;
+
+    const profile = await _marchUpstream(lat, lon, isUS, motion, latest.frameInfo);
+    if (profile.length === 0 || !profile.some(p => p.dbz !== null)) return null;
+
+    if (!isRaining) {
+        const edge = _findLeadingEdge(profile);
+        if (!edge) return null;
+        const beginInMin = Math.round(edge.distKm / motion.speed_kmh * 60);
+        if (beginInMin > RADAR_CFG.EDGE_MAX_LOOKAHEAD_MIN) return null;
+        const lateralHits = await _lateralSpreadHits(lat, lon, isUS, latest.frameInfo, motion, edge.distKm);
+        return {
+            beginInMin, endInMin: null,
+            edgeDistKm: edge.distKm, closingSpeedKmh: motion.speed_kmh, lateralHits,
+        };
     }
 
-    return results;
+    const edge = _findTrailingEdge(profile);
+    if (!edge) return null; // rain extends past the march horizon
+    const endInMin = Math.round(edge.distKm / motion.speed_kmh * 60);
+    if (endInMin > RADAR_CFG.EDGE_MAX_LOOKAHEAD_MIN) return null;
+    return {
+        beginInMin: null, endInMin,
+        edgeDistKm: edge.distKm, closingSpeedKmh: motion.speed_kmh, lateralHits: null,
+    };
 }
 
-// ── Reset (called on location change) ────────────────────────────────────────
+// ── RainViewer Nowcast Frames (model-extrapolated future radar) ──────────────
+// The weather-maps.json we already fetch contains a radar.nowcast array
+// (~3 future frames at 10-min steps) that provides an independent, worldwide
+// begin/end signal — RainViewer's own advection nowcast. Sampled at the point
+// through the same tile pipeline (color=2 palette, tile cache).
 
-function resetRadarState() {
-    _radarFrames = [];
-    _rainState = 'OFF';
-    _lastOnTime = null;
-    _lastValidDbzTime = null;
-    _pendingOnCount = 0;
-    _radarHistoryLoaded = false;
-    _radarHistoryPending = null;
+// Sample all future frames at the point → [{ minuteAhead, dbz }] or null.
+async function sampleRainviewerNowcast(lat, lon) {
+    const maps = await _fetchRainViewerMaps();
+    if (!maps || !maps.radar || !maps.radar.nowcast || maps.radar.nowcast.length === 0) return null;
+    const nowSec = Date.now() / 1000;
+    const samples = [];
+    for (const f of maps.radar.nowcast) {
+        const minuteAhead = Math.round((f.time - nowSec) / 60);
+        if (minuteAhead < 0) continue; // stale future frame
+        const dbz = await _sampleFrameAtPoint(lat, lon, false, {
+            rvHost: maps.host, rvPath: f.path,
+        });
+        samples.push({ minuteAhead, dbz });
+    }
+    return samples.length > 0 ? samples : null;
 }
+
+// PURE — begin/end from RV nowcast samples. Begin ≈ midpoint of the last dry
+// and first wet frame (frames are 10 min apart, so ±5 min quantization);
+// end ≈ midpoint of last wet and first dry frame.
+function _deriveRvTiming(rvSamples, isRaining) {
+    const NONE = { beginInMin: null, endInMin: null };
+    if (!rvSamples || rvSamples.length === 0) return NONE;
+    let prevMinute = 0;
+    for (const s of rvSamples) {
+        const wet = s.dbz !== null && s.dbz >= RADAR_CFG.ON_THRESHOLD;
+        if (!isRaining && wet) {
+            return { beginInMin: Math.round((prevMinute + s.minuteAhead) / 2), endInMin: null };
+        }
+        if (isRaining && !wet) {
+            return { beginInMin: null, endInMin: Math.round((prevMinute + s.minuteAhead) / 2) };
+        }
+        prevMinute = s.minuteAhead;
+    }
+    return NONE;
+}
+

@@ -6,16 +6,45 @@ This prevents re-introducing regressions or repeating failed approaches.
 
 ---
 
+## ⚠ Canonical Source-of-Truth Rule (read first)
+
+The nowcast algorithm now exists in **two parallel implementations** that must
+stay in sync:
+
+1. **`src/services/nowcast.js`** + `src/services/radarSampler.js` — browser
+   display path; what the user sees in the weather app.
+2. **`weather_benchmark/collector_lib/nowcast.py`** + `radar_sampler.py` —
+   collector daemon; what gets written to training data.
+
+**Any change to one MUST be mirrored in the other** before the change is
+merged. If they drift, the model trained on collector data will reflect a
+different algorithm than the browser display, producing train/serve skew
+that is hard to detect.
+
+The parity test in `tests/test_collector_parity.py` enforces threshold
+agreement. Run it (and the smoke test in `tests/test_collector_smoke.py`)
+before any commit that touches scoring, DBZ thresholds, or detection logic.
+
+---
+
 ## Key Files
 
 | File | Role |
 |---|---|
-| `backtest.py` | Main pipeline: loads logs, fetches obs, scores, writes report |
-| `src/nowcast_scoring.py` | Core scoring logic — wording, presence, intensity, icon |
-| `src/observations.py` | IEM ASOS fetch + per-day cache; retry logic for 429s |
+| `collector.py` | Continuous data collection daemon (the source of training data) |
+| `collector_config.yaml` | Polling cadence, rate limits, paths |
+| `collector_lib/nowcast.py` | Python port of `src/services/nowcast.js` |
+| `collector_lib/radar_sampler.py` | Python port of `src/services/radarSampler.js` |
+| `collector_lib/lightning.py` | METAR thunder fallback (GLM not yet polled here) |
+| `collector_lib/record_builder.py` | JSONL schema builder (port of `nowcastLogger.js`) |
+| `backtest.py` | Scoring pipeline: loads logs, fetches obs, writes report |
+| `src/nowcast_scoring.py` | Wording / presence / intensity / icon scoring |
+| `src/observations.py` | IEM ASOS fetch + per-day cache; retry-with-backoff |
 | `src/ingest.py` | Loads JSONL log files; filename date-range filter |
-| `../server.py` | Dev server; manages `acquiring.jsonl` → `START--END.jsonl` rename |
+| `src/lead_targets.py` | Truth labels at +10/+20/+30/+45/+60 min |
+| `../server.py` | Dev server (static files + backtest API); no longer collects |
 | `viewer.html` | Benchmark report viewer UI |
+| `COLLECTOR.md` | Operator guide for the collector |
 
 ---
 
@@ -119,6 +148,149 @@ at that minute mark; decay confidence faster with distance in the timeline.
 Newest first. **Before implementing a change, add an entry here** with rationale
 and which metric you expect to move. Update with actual results after re-running
 the benchmark.
+
+---
+
+### [2026-05-17] MRMS truth-augmentation (Phase A of new-sources plan)
+
+**Problem:** ASOS labels are noisy in time and space — up to ~30 min off
+the snapshot they grade, sometimes >10 km from the city's actual location.
+For the Atlanta virga / elevated-return failure mode in particular, ASOS
+under-reports "no rain at surface" because radar at distance can read as
+echoes that never reach the ground.
+
+**MRMS (Multi-Radar Multi-Sensor)** is NOAA's combined-radar/gauge product:
+1 km × 1 km, 2-min cadence, surface-calibrated, beam-blockage-corrected.
+Using MRMS as the truth label means each snapshot is graded against a
+co-located, time-matched ground reality.
+
+**Changes (backtest-side only — no collector, browser, or schema change):**
+- New `src/mrms_observations.py`: downloads MRMS PrecipRate GRIB2 from
+  NCEP NOMADS (real-time) or Iowa State archive (historical), extracts
+  the rate at each city's (lat, lon) via `wgrib2` subprocess. Per-city
+  per-day disk cache. Returns the same DataFrame shape as ASOS/mesonet
+  so the labeler consumes it through one code path.
+- `src/lead_targets.py`: extended the precedence chain. Now
+  **MRMS (within 4 min) → mesonet (within 15 min) → ASOS (within 40 min) → none**.
+  Each lead-target label emits `truth_source_+N` so any metric shift is
+  auditable.
+- `backtest.py`: per-city MRMS fetch; new `--mrms` CLI flag.
+- `config.yaml`: new `mrms:` block (`enabled`, `wgrib2_path`,
+  `fetch_cadence_min`).
+- `tests/test_mrms.py`: 10 offline unit tests + 2 live smoke tests
+  (skipped if wgrib2 missing or NO_NETWORK=1).
+
+**Prerequisite:** `wgrib2` binary (v3.1.3 or later). NOAA-EMC GitHub
+releases are source-only on Windows; download a pre-built Windows binary
+and either add it to PATH or set `mrms.wgrib2_path` in config.yaml.
+Currently shipped with the project at `wgrib/wgrib2.exe` (auto-detected).
+
+**Auth:** none. NCEP NOMADS and the Iowa State archive are public.
+
+**Train/serve skew:** None. This is truth-side only. The prediction
+algorithm runs with the inputs it always has had.
+
+**Expected metric impact:**
+- Atlanta `rain_false_alarm_pct`: 36.9% should drop notably as MRMS
+  catches the virga / overshoot scenarios that ASOS misses.
+- `n_scored` per city: ↑ everywhere — MRMS is dense and reliable inside
+  CONUS, fills holes where ASOS reporting gaps exist.
+- Reports gain `mrms_enabled` + `mrms_samples` per city in `period`,
+  plus `truth_source_+N` per snapshot lead time.
+
+**Triple-truth precedence rule:**
+1. MRMS reading within 4 min of target → use it (`mrms`)
+2. Else mesonet reading within 15 min → use it (`mesonet`)
+3. Else ASOS reading within 40 min (lead) / 65 min (current) → `asos`
+4. Else `None` labels with `truth_source = 'none'`
+
+This phase is the **evaluation** step — if Atlanta false alarms drop
+significantly under MRMS truth, that's evidence MRMS would also help
+as a *feature* in the live dashboard. The dashboard integration is
+deliberately deferred until that evidence exists (separate plan).
+
+---
+
+### [2026-05-17] Mesonet truth-augmentation (Phase B of new-sources plan)
+
+**Problem:** IEM ASOS is the only truth source for benchmark labels — sparse
+(~1 station / 5,000 km², hourly) and often ~30 min off in time from the snapshot
+it's grading. Atlanta's 36.9% rain-false-alarm rate is partly label noise.
+
+**Changes (backtest-side only — no collector, browser, or schema change):**
+- New `src/mesonet_observations.py`: Synoptic Data API client. Queries
+  stations within `radius_km` of each city, aggregates across stations into
+  10-min buckets, mirrors the ASOS DataFrame shape so the labeler doesn't
+  need to know which source produced a row. Per-city per-day disk cache.
+- `src/lead_targets.py`: `label_lead_targets()` and `label_current_truth()`
+  now accept optional `mesonet_obs=` argument. Mesonet preferred when within
+  15 min of target; ASOS fallback otherwise. Emits new `truth_source_+N`
+  fields (per lead time) and `truth_source` (current) so any metric movement
+  is auditable.
+- `backtest.py`: per-city mesonet fetch; new `--mesonet` CLI flag.
+- `config.yaml`: new `mesonet:` block (`enabled`, `radius_km`, `min_stations`).
+- `tests/test_mesonet.py`: 11 offline tests + 1 live smoke test (skipped
+  unless `SYNOPTIC_TOKEN` set).
+
+**Auth:** Synoptic Data API free token (https://synopticdata.com/api).
+Set via env var `SYNOPTIC_TOKEN`. Never committed.
+
+**Train/serve skew:** None. This is a truth-side enhancement. The browser
+and collector are untouched. The prediction algorithm uses only the inputs
+it always has had (NEXRAD, METAR, Open-Meteo); we're just grading those
+predictions against a higher-quality reality.
+
+**Expected metric impact:**
+- Atlanta `rain_false_alarm_pct`: 36.9% → maybe ~20-25% (some "false alarms"
+  against ASOS will turn out to be real events caught by closer mesonet
+  stations). This is *label correction*, not algorithm improvement.
+- `n_scored` per city: ↑ in covered states (denser truth = more snapshots
+  with matchable labels).
+- Reports gain new `truth_source` field showing which source produced each
+  label, enabling honest auditing of any metric shift.
+
+**Dual-truth precedence rule:**
+1. Mesonet reading within 15 min of target → use it (`truth_source = 'mesonet'`)
+2. Else ASOS reading within 40 min of target (lead) / 65 min (current) → use it (`asos`)
+3. Else `None` labels with `truth_source = 'none'`
+
+This is the **evaluation** step of the source-integration pipeline. If
+metric shifts are large + concentrated where mesonets are dense, that's
+signal to consider adding mesonet inputs to the live algorithm (a separate
+future task).
+
+---
+
+### [2026-05-03] Collection moved from browser to Python daemon
+
+**Problem:** Browser-driven collection had six concrete issues for ML data quality
+(see plan `~/.claude/plans/big-picture-is-there-warm-hamming.md`): user-driven
+gaps, rotation-based undersampling, shared radar state corrupting cities,
+tangled responsibilities, brittle acquisition recovery, and feedback coupling
+between collected data and the displayed algorithm.
+
+**Changes:**
+- Removed `src/services/nowcastLogger.js`, all `toggleCollection`/`startCollection`
+  /`stopCollection` machinery in `main.js`, the Collect button in `index.html`,
+  and the `/api/nowcast-log` + `/api/acquisition-end` server routes.
+- Added `collector.py` daemon + `collector_lib/` package: Python port of the JS
+  nowcast (`nowcast.py`, `radar_sampler.py`, `lightning.py`, `record_builder.py`,
+  `rate_limiter.py`, `fetchers.py`). One thread per city, independent state,
+  shared token-bucket rate limiter for IEM endpoints.
+- Per-city write path: `data/logs/<city_slug>/YYYY-MM-DD.jsonl`. No more
+  `acquiring.jsonl` rename machinery.
+- Added validation tests: `tests/test_collector_smoke.py` (Layer 1, ~6 min,
+  hits live endpoints) and `tests/test_collector_parity.py` (Layer 2, <1 s,
+  no network).
+- Added `COLLECTOR.md` operator guide.
+- Established the **canonical-source-of-truth rule** above: JS and Python
+  nowcast must change together.
+
+**Expected metric impact:** none direct — this is infrastructure. The downstream
+benefit (after collection runs for 3-4 weeks): much denser per-city coverage,
+no cross-city state corruption, and a clean dataset suitable for ML training.
+
+**sw.js bumped:** v1.44.1 → v1.45.0
 
 ---
 

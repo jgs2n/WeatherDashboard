@@ -190,6 +190,20 @@ async function fetchAirQuality(lat, lon) {
     }
 }
 
+// Historical daily data from the ERA5 archive (climatology feature).
+// Routed through _omFetch so budget / 429 cooldown / backoff all apply.
+// dailyVars: comma-separated list, e.g. 'precipitation_sum,snowfall_sum'.
+// Returns the `daily` block ({ time: [...], <var>: [...] }) or null.
+async function fetchArchiveDaily(lat, lon, startDate, endDate, dailyVars) {
+    const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
+        `&start_date=${startDate}&end_date=${endDate}` +
+        `&daily=${dailyVars}` +
+        `&precipitation_unit=inch&timezone=auto`;
+    const data = await _omFetch(url);
+    if (data.error) throw new Error(data.reason || 'Open-Meteo archive error');
+    return data.daily || null;
+}
+
 // fetchModelComparison moved to src/services/modelComparison.js
 
 // Lightweight fetch for tab temperature badges + model context for logging.

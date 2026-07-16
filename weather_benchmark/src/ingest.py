@@ -7,7 +7,7 @@ the nowcast state from getNowSummary().
 Supports three input formats:
   1. Forecast JSON — Open-Meteo API response with _meta envelope
   2. Nowcast JSON — getNowSummary() output with _meta envelope (legacy)
-  3. JSONL logs — one record per line from nowcastLogger.js (Phase 2)
+  3. JSONL logs — one record per line from collector.py (Phase 2)
 """
 
 import json
@@ -96,7 +96,7 @@ class NowcastSnapshot:
 
 @dataclass
 class LogRecord:
-    """One JSONL log record from nowcastLogger.js — richer than NowcastSnapshot."""
+    """One JSONL log record from collector.py — richer than NowcastSnapshot."""
     timestamp: datetime
     lat: float
     lon: float
@@ -520,7 +520,7 @@ def horizon_bucket_label(hours: float) -> str:
 # ── JSONL log loading ───────────────────────────────────────────────────────
 
 def _parse_one_log_record(data: dict, source_file: str) -> LogRecord:
-    """Parse one JSONL log record from nowcastLogger.js."""
+    """Parse one JSONL log record from collector.py."""
     precip = data.get('precip') or {}
     sky = data.get('sky') or {}
     lightning = data.get('lightning') or {}
@@ -612,16 +612,27 @@ def load_jsonl_logs(
         logger.warning(f'Log directory not found: {log_dir}')
         return records
 
-    for fname in sorted(os.listdir(log_dir)):
-        if not fname.endswith('.jsonl'):
-            continue
+    # Walk both the top-level dir (legacy flat layout from browser collection)
+    # AND city subdirectories (new layout from collector.py). Each yields
+    # (relpath, basename) where basename is what we date-filter against.
+    candidates = []
+    for entry in sorted(os.listdir(log_dir)):
+        full = os.path.join(log_dir, entry)
+        if os.path.isfile(full) and entry.endswith('.jsonl'):
+            candidates.append((full, entry))
+        elif os.path.isdir(full):
+            for sub in sorted(os.listdir(full)):
+                if sub.endswith('.jsonl'):
+                    candidates.append((os.path.join(full, sub), sub))
 
+    for path, fname in candidates:
         # Skip in-progress acquisition file — not yet finalized
         if fname == 'acquiring.jsonl':
             continue
 
-        # Quick date filter on filename — supports both legacy (YYYY-MM-DD_*.jsonl)
-        # and new START--END format (YYYY-MM-DD_HH-MM-SSZ--YYYY-MM-DD_HH-MM-SSZ.jsonl)
+        # Quick date filter on filename — supports legacy (YYYY-MM-DD_*.jsonl),
+        # new START--END (YYYY-MM-DD_HH-MM-SSZ--YYYY-MM-DD_HH-MM-SSZ.jsonl),
+        # and city-partitioned (YYYY-MM-DD.jsonl from collector.py).
         if date_range:
             try:
                 if '--' in fname:
@@ -635,8 +646,6 @@ def load_jsonl_logs(
                     continue
             except ValueError:
                 pass  # Non-date filename, load anyway
-
-        path = os.path.join(log_dir, fname)
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):

@@ -28,6 +28,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.ingest import load_jsonl_logs, LogRecord
 from src.observations import fetch_observations
+from src.mesonet_observations import (
+    fetch_mesonet_observations,
+    is_enabled as mesonet_enabled,
+)
+from src.mrms_observations import (
+    fetch_mrms_observations,
+    resolve_wgrib2,
+)
 from src.nowcast_scoring import (
     score_wording, score_presence_intensity, score_lightning_state,
     build_nowcast_obs_window, score_precip_timing_nowcast,
@@ -88,6 +96,8 @@ def backtest_city(
     log_records: list,
     observations: pd.DataFrame,
     config: dict,
+    mesonet_obs: pd.DataFrame = None,
+    mrms_obs: pd.DataFrame = None,
 ) -> dict:
     """
     Run backtest for a single city.
@@ -127,8 +137,10 @@ def backtest_city(
             'trend_confidence': rec.trend_summary_confidence,
         }
 
-        # Current-state truth
-        current_truth = label_current_truth(rec, observations)
+        # Current-state truth: MRMS > mesonet > ASOS precedence
+        current_truth = label_current_truth(rec, observations,
+                                            mesonet_obs=mesonet_obs,
+                                            mrms_obs=mrms_obs)
         scored.update(current_truth)
 
         # Wording score
@@ -183,8 +195,10 @@ def backtest_city(
             scored['wording_category'] = None
             scored['wording_detail'] = 'no observations'
 
-        # Lead-target truth labels
-        lead_labels = label_lead_targets(rec, observations)
+        # Lead-target truth labels (MRMS > mesonet > ASOS precedence)
+        lead_labels = label_lead_targets(rec, observations,
+                                         mesonet_obs=mesonet_obs,
+                                         mrms_obs=mrms_obs)
         scored.update(lead_labels)
 
         snapshots.append(scored)
@@ -457,6 +471,33 @@ def run_backtest(config: dict, args) -> list:
     obs_cache_dir = bt_cfg.get('obs_cache_dir', config.get('observation_dir', './data/observations'))
     report_dir = bt_cfg.get('report_dir', config.get('report_dir', './reports'))
     ml_dir = bt_cfg.get('ml_output_dir', './data/ml')
+    mesonet_cache_dir = bt_cfg.get('mesonet_cache_dir', './data/obs_cache/mesonet')
+    mrms_cache_dir = bt_cfg.get('mrms_cache_dir', './data/obs_cache/mrms')
+
+    # Mesonet config: opt-in via --mesonet CLI flag OR config.mesonet.enabled.
+    # Auto-disable if SYNOPTIC_TOKEN missing, regardless of flag.
+    mesonet_cfg = config.get('mesonet', {})
+    cli_mesonet = hasattr(args, 'mesonet') and args.mesonet
+    use_mesonet = (cli_mesonet or mesonet_cfg.get('enabled', False)) and mesonet_enabled()
+    mesonet_radius_km = mesonet_cfg.get('radius_km', 30)
+    mesonet_min_stations = mesonet_cfg.get('min_stations', 3)
+    if cli_mesonet and not mesonet_enabled():
+        logger.warning('--mesonet requested but SYNOPTIC_TOKEN not set; falling back to ASOS only')
+
+    # MRMS config: opt-in via --mrms CLI flag OR config.mrms.enabled.
+    # Auto-disable if wgrib2 binary not found.
+    mrms_cfg = config.get('mrms', {})
+    cli_mrms = hasattr(args, 'mrms') and args.mrms
+    mrms_wgrib2_path = mrms_cfg.get('wgrib2_path')   # None → auto-resolve
+    mrms_resolved = resolve_wgrib2(mrms_wgrib2_path)
+    use_mrms = (cli_mrms or mrms_cfg.get('enabled', False)) and mrms_resolved is not None
+    mrms_fetch_cadence_min = mrms_cfg.get('fetch_cadence_min', 10)
+    if cli_mrms and mrms_resolved is None:
+        logger.warning('--mrms requested but wgrib2 binary not found; install it or set '
+                       'mrms.wgrib2_path in config.yaml; falling back to ASOS/mesonet only')
+    elif use_mrms:
+        logger.info('MRMS enabled (wgrib2=%s, cadence=%dmin)',
+                    mrms_resolved, mrms_fetch_cadence_min)
 
     # Resolve paths relative to config file location
     base = Path(__file__).parent
@@ -464,6 +505,8 @@ def run_backtest(config: dict, args) -> list:
     obs_cache_dir = str(base / obs_cache_dir)
     report_dir = str(base / report_dir)
     ml_dir = str(base / ml_dir)
+    mesonet_cache_dir = str(base / mesonet_cache_dir)
+    mrms_cache_dir = str(base / mrms_cache_dir)
 
     # Date range
     if hasattr(args, 'start_date') and args.start_date:
@@ -567,11 +610,55 @@ def run_backtest(config: dict, args) -> list:
             observations, obs_station, obs_dist_km = pd.DataFrame(), '', 0.0
             logger.warning(f'No station for {city_name} — scoring will be limited')
 
+        # Optional: mesonet truth (Synoptic API). Empty DataFrame if disabled
+        # or if the token is unavailable; lead_targets will fall back to ASOS.
+        mesonet_df = pd.DataFrame()
+        if use_mesonet and lat is not None and lon is not None:
+            try:
+                mesonet_df = fetch_mesonet_observations(
+                    lat, lon, start_date, end_date, mesonet_cache_dir,
+                    radius_km=mesonet_radius_km,
+                    min_stations=mesonet_min_stations,
+                    city_slug=city_name.lower().replace(' ', '_'),
+                )
+                if not mesonet_df.empty:
+                    logger.info(f'Fetched {len(mesonet_df)} mesonet bucket(s) within '
+                                f'{mesonet_radius_km} km of {city_name}')
+                else:
+                    logger.info(f'No mesonet data near {city_name} — ASOS only')
+            except Exception as e:
+                logger.warning(f'Mesonet fetch failed for {city_name}: {e}')
+
+        # Optional: MRMS truth (wgrib2 + NCEP NOMADS / Iowa State archive).
+        mrms_df = pd.DataFrame()
+        if use_mrms and lat is not None and lon is not None:
+            try:
+                mrms_df = fetch_mrms_observations(
+                    lat, lon, start_date, end_date, mrms_cache_dir,
+                    wgrib2_path=mrms_resolved,
+                    fetch_cadence_min=mrms_fetch_cadence_min,
+                    city_slug=city_name.lower().replace(' ', '_'),
+                )
+                if not mrms_df.empty:
+                    logger.info(f'Fetched {len(mrms_df)} MRMS sample(s) for {city_name}')
+                else:
+                    logger.info(f'No MRMS data for {city_name} window — falling back')
+            except Exception as e:
+                logger.warning(f'MRMS fetch failed for {city_name}: {e}')
+
         # Run backtest
-        result = backtest_city(city, city_logs, observations, config)
+        result = backtest_city(
+            city, city_logs, observations, config,
+            mesonet_obs=mesonet_df if not mesonet_df.empty else None,
+            mrms_obs=mrms_df if not mrms_df.empty else None,
+        )
         result['period']['obs_station'] = obs_station
         result['period']['obs_station_dist_km'] = round(obs_dist_km, 1)
         result['period']['obs_is_fallback'] = obs_station != station
+        result['period']['mesonet_enabled'] = bool(use_mesonet and not mesonet_df.empty)
+        result['period']['mesonet_buckets'] = int(len(mesonet_df))
+        result['period']['mrms_enabled'] = bool(use_mrms and not mrms_df.empty)
+        result['period']['mrms_samples'] = int(len(mrms_df))
         city_results.append(result)
         all_ml_rows.extend(result['ml_rows'])
 
@@ -675,6 +762,13 @@ def main():
                         help='End date YYYY-MM-DD (overrides --days)')
     parser.add_argument('--export-ml', action='store_true',
                         help='Export ML feature CSV')
+    parser.add_argument('--mesonet', action='store_true',
+                        help='Augment ASOS truth with nearby state-mesonet observations '
+                             'via the Synoptic Data API (requires SYNOPTIC_TOKEN env var)')
+    parser.add_argument('--mrms', action='store_true',
+                        help='Augment ASOS truth with MRMS quantitative precipitation '
+                             '(NCEP NOMADS + Iowa State archive; requires wgrib2 on PATH '
+                             'or mrms.wgrib2_path set in config.yaml)')
     parser.add_argument('--config', type=str,
                         default=str(Path(__file__).parent / 'config.yaml'),
                         help='Path to config.yaml')
