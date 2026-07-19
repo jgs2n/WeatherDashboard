@@ -31,7 +31,9 @@ from typing import Dict, List, Optional
 import yaml
 
 from collector_lib.rate_limiter import TokenBucket
-from collector_lib.radar_sampler import RadarSampler, RADAR_CFG, derive_rv_timing
+from collector_lib.radar_sampler import (
+    RadarSampler, RADAR_CFG, derive_rv_timing, fallback_motion_from_wind,
+)
 from collector_lib.fetchers import (
     fetch_iem_latest_metar, fetch_open_meteo,
     extract_model_context, extract_hourly_context,
@@ -41,6 +43,28 @@ from collector_lib import nowcast as nc
 from collector_lib.record_builder import build_record
 
 logger = logging.getLogger('collector')
+
+
+def _extract_steering_wind(om_hourly_resp):
+    """Current-hour (speed_mph, dir_from_deg) 700 hPa wind from the cached
+    Open-Meteo hourly response; (None, None) when unavailable."""
+    if not om_hourly_resp or 'hourly' not in om_hourly_resp:
+        return None, None
+    h = om_hourly_resp['hourly']
+    times = h.get('time') or []
+    speeds = h.get('wind_speed_700hPa') or []
+    dirs = h.get('wind_direction_700hPa') or []
+    if not times or not speeds:
+        return None, None
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:00')
+    try:
+        idx = times.index(now_iso)
+    except ValueError:
+        idx = len(times) - 1  # cached response may be up to 30 min old
+    speed = speeds[idx] if idx < len(speeds) else None
+    dirn = dirs[idx] if idx < len(dirs) else None
+    return speed, dirn
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = HERE / 'collector_config.yaml'
@@ -122,6 +146,12 @@ class CityWorker(threading.Thread):
         # ── Inputs ────────────────────────────────────────────────────────
         radar_state = self.sampler.sample()
         motion = self.sampler.estimate_motion()
+        # Fallback: steering-level model wind (700 hPa) when correlation and
+        # its 15-min persistence both fail. Confidence capped at med downstream.
+        if motion is None:
+            om_hourly_resp = self._fetch_open_meteo_cached('hourly')
+            steering = _extract_steering_wind(om_hourly_resp)
+            motion = fallback_motion_from_wind(*steering)
         obs = fetch_iem_latest_metar(self.city['station'], self.limiter)
         om_current = self._fetch_open_meteo_cached('current')
         om_hourly = self._fetch_open_meteo_cached('hourly')

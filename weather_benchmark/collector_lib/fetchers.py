@@ -74,9 +74,9 @@ def fetch_rainviewer_maps() -> Optional[dict]:
 def fetch_rv_tile(host: str, path: str, z: int, x: int, y: int,
                   limiter: Optional[TokenBucket] = None,
                   retries: int = 2) -> Optional[Image.Image]:
-    """Fetch a RainViewer radar tile (color=2 universal blue, smooth+snow),
-    matching the JS tile URL exactly so the shared palette applies."""
-    url = f'{host}{path}/256/{z}/{x}/{y}/2/1_1.png'
+    """Fetch a RainViewer radar tile in color scheme 0 (raw dBZ grayscale,
+    no smoothing) — decoded by _rv_raw_to_dbz. Matches the JS rvRaw URL."""
+    url = f'{host}{path}/256/{z}/{x}/{y}/0/0_0.png'
     for attempt in range(retries):
         if limiter is not None and not limiter.acquire():
             logger.warning('Rate limiter timeout for RV tile %s', url)
@@ -208,7 +208,8 @@ def fetch_open_meteo(lat: float, lon: float, want_hourly: bool = False) -> Optio
     }
     if want_hourly:
         params['hourly'] = ('weather_code,temperature_2m,precipitation_probability,'
-                            'precipitation,cloud_cover')
+                            'precipitation,cloud_cover,'
+                            'wind_speed_700hPa,wind_direction_700hPa')
         params['forecast_days'] = 1
 
     try:

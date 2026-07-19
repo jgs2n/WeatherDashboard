@@ -431,10 +431,11 @@ def _conf_shift(conf: str, delta: int) -> str:
 
 def apply_prediction_memory(memory: Optional[Dict], kind: str,
                             new_target_ms: float, confidence: str,
-                            now_ms: float) -> Dict:
+                            now_ms: float, max_confidence: str = 'high') -> Dict:
     """PURE — converging predictions (≤5 min drift twice) boost one tier and
-    smooth; diverging (>15 min) decay a tier. Returns
-    {'targetMs', 'confidence', 'memory'}."""
+    smooth; diverging (>15 min) decay a tier. max_confidence caps the boost
+    (v1.51.0: slope-only / model-wind predictions never reach 'high' just by
+    being consistent). Returns {'targetMs', 'confidence', 'memory'}."""
     fresh = {'kind': kind, 'targetMs': new_target_ms, 'updatedAtMs': now_ms,
              'stableCount': 0}
     if (not memory or memory['kind'] != kind
@@ -446,6 +447,8 @@ def apply_prediction_memory(memory: Optional[Dict], kind: str,
         stable_count = memory['stableCount'] + 1
         target_ms = round(0.7 * new_target_ms + 0.3 * memory['targetMs'])
         conf = _conf_shift(confidence, +1) if stable_count >= 2 else confidence
+        if _CONF_TIERS.index(conf) > _CONF_TIERS.index(max_confidence):
+            conf = max_confidence
         return {'targetMs': target_ms, 'confidence': conf,
                 'memory': {'kind': kind, 'targetMs': target_ms,
                            'updatedAtMs': now_ms, 'stableCount': stable_count}}
@@ -467,9 +470,9 @@ class PredictionMemory:
         self.state = None
 
     def apply(self, kind: str, new_target_ms: float, confidence: str,
-              now_ms: float):
+              now_ms: float, max_confidence: str = 'high'):
         out = apply_prediction_memory(self.state, kind, new_target_ms,
-                                      confidence, now_ms)
+                                      confidence, now_ms, max_confidence)
         self.state = out['memory']
         return out['targetMs'], out['confidence']
 
@@ -491,7 +494,10 @@ def clamp_precision(minutes: Optional[int], confidence: str) -> Optional[int]:
 
 def slope_signal(timeline: Optional[List[Dict]], is_raining: bool) -> Optional[Dict]:
     """PURE — slope tier from timeline wet buckets (legacy logic, capped at
-    med). Returns {'minutes', 'tier', 'intermittent'} or None."""
+    med). Returns {'minutes', 'tier', 'intermittent', 'horizon'} or None.
+    v1.51.0: wet projections staying wet through the final bucket are marked
+    horizon (minutes None) — the '~55 min' there is the timeline edge, not a
+    clearing signal, and used to roll forward forever."""
     if not timeline:
         return None
     wet = [b for b in timeline if b['precipClass'] > 0]
@@ -507,17 +513,24 @@ def slope_signal(timeline: Optional[List[Dict]], is_raining: bool) -> Optional[D
     tier = 'high' if avg_conf >= 0.7 else 'med' if avg_conf >= 0.4 else 'low'
     if tier == 'high':
         tier = 'med'  # slope-only never exceeds med
+    last_bucket_min = timeline[-1]['minute']
+    if is_raining and wet[-1]['minute'] >= last_bucket_min:
+        return {'minutes': None, 'tier': tier, 'intermittent': run_count >= 3,
+                'horizon': True}
     minutes = wet[-1]['minute'] if is_raining else wet[0]['minute']
-    return {'minutes': minutes, 'tier': tier, 'intermittent': run_count >= 3}
+    return {'minutes': minutes, 'tier': tier, 'intermittent': run_count >= 3,
+            'horizon': False}
 
 
 def derive_dry_timing(edge: Optional[Dict], slope: Optional[Dict],
                       motion: Optional[Dict]) -> Dict:
-    """PURE — fuse edge + slope for the dry case."""
+    """PURE — fuse edge + slope for the dry case. Model-wind fallback motion
+    caps edge confidence at med."""
+    observed_motion = bool(motion) and motion.get('source') != 'model-wind'
     if edge and edge.get('beginInMin') is not None:
         slope_agrees = slope is not None
         fast_enough = bool(motion and motion.get('speed_kmh', 0) >= 10)
-        if edge['lateralHits'] >= 2 and fast_enough and slope_agrees:
+        if edge['lateralHits'] >= 2 and fast_enough and slope_agrees and observed_motion:
             return {'minutes': edge['beginInMin'], 'confidence': 'high', 'method': 'edge'}
         if edge['lateralHits'] >= 2:
             return {'minutes': edge['beginInMin'], 'confidence': 'med', 'method': 'edge'}
@@ -555,15 +568,20 @@ def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int]) -> Dict:
 
 def derive_wet_timing(edge: Optional[Dict], slope: Optional[Dict],
                       motion: Optional[Dict], edge_attempted: bool) -> Dict:
-    """PURE — fuse edge + slope for the wet case. 'edge-horizon' = trailing
-    edge beyond march range: rain continues all hour."""
+    """PURE — fuse edge + slope for the wet case. '*-horizon' = rain extends
+    past the prediction range: continues all hour. Model-wind fallback motion
+    caps edge confidence at med."""
+    observed_motion = bool(motion) and motion.get('source') != 'model-wind'
     if edge and edge.get('endInMin') is not None:
         fast_enough = bool(motion and motion.get('speed_kmh', 0) >= 10)
         return {'minutes': edge['endInMin'],
-                'confidence': 'high' if fast_enough else 'med', 'method': 'edge'}
+                'confidence': 'high' if (fast_enough and observed_motion) else 'med',
+                'method': 'edge'}
     if edge_attempted and motion and motion.get('speed_kmh', 0) >= 5:
         return {'minutes': None, 'confidence': 'med', 'method': 'edge-horizon'}
     if slope is not None:
+        if slope.get('horizon'):
+            return {'minutes': None, 'confidence': 'med', 'method': 'slope-horizon'}
         return {'minutes': slope['minutes'], 'confidence': slope['tier'], 'method': 'slope'}
     return {'minutes': None, 'confidence': 'low', 'method': 'none'}
 
@@ -595,7 +613,7 @@ def summarize_trend(timeline: Optional[List[Dict]], is_raining: bool,
 
     if is_raining:
         if minutes is None:
-            if method == 'edge-horizon':
+            if method in ('edge-horizon', 'slope-horizon'):
                 return {'text': 'Rain continuing this hour', 'confidence': 'med'}
             return {'text': 'Rain now, clearing later', 'confidence': 'low'}
         if confidence == 'high':
@@ -647,14 +665,21 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
     timing = (derive_wet_timing(edge, slope, motion, edge_attempted) if is_raining
               else derive_dry_timing(edge, slope, motion))
     timing = apply_rv_consensus(timing, rv_minutes)
+    # Consensus built on estimated (model-wind) motion caps at med
+    observed_motion = bool(motion) and motion.get('source') != 'model-wind'
+    if (timing['method'] == 'consensus' and not observed_motion
+            and timing['confidence'] == 'high'):
+        timing = {**timing, 'confidence': 'med'}
 
     # Self-correction against the previous poll's prediction
     raw_minutes = timing['minutes']
     confidence = timing['confidence']
     if raw_minutes is not None and pred_memory is not None:
         kind = 'end' if is_raining else 'begin'
+        max_conf = ('high' if timing['method'] in ('edge', 'consensus') and observed_motion
+                    else 'med')
         target_ms, confidence = pred_memory.apply(
-            kind, now_ms + raw_minutes * 60000, confidence, now_ms)
+            kind, now_ms + raw_minutes * 60000, confidence, now_ms, max_conf)
         raw_minutes = max(0, round((target_ms - now_ms) / 60000))
 
     minutes = clamp_precision(raw_minutes, confidence)

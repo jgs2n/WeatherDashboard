@@ -34,6 +34,8 @@ const RADAR_CFG = {
     MOTION_GRID:        9,       // binary correlation grid size (9×9)
     MOTION_MAX_SHIFT:   4,       // ± cells searched — resolves ~107 km/h at 5-min cadence
     MOTION_MIN_OVERLAP: 3,       // min overlap score to accept a shift
+    MOTION_PERSIST_MS:  15 * 60 * 1000,  // reuse last good vector this long
+    MOTION_WIND_MIN_MPH: 8,      // min steering wind for model-wind fallback
     EDGE_STEP_KM:           2,   // upstream march step (~1 px at zoom 6)
     EDGE_MAX_LOOKAHEAD_MIN: 60,  // don't predict past the hour
     EDGE_MAX_RANGE_KM:      120, // march distance cap
@@ -122,10 +124,25 @@ function _frameUrl(isUS, frameInfo, tileX, tileY) {
         return `${RADAR_CFG.IEM_BASE}/ridge::USCOMP-N0Q-${frameInfo.iemTs}/${RADAR_CFG.ZOOM}/${tileX}/${tileY}.png`;
     }
     if (frameInfo.rvHost && frameInfo.rvPath) {
-        // color=2 (universal blue), smooth=1, snow=1
-        return `${frameInfo.rvHost}${frameInfo.rvPath}/${RADAR_CFG.TILE_SIZE}/${RADAR_CFG.ZOOM}/${tileX}/${tileY}/2/1_1.png`;
+        // Default color=2 (universal blue), smooth=1, snow=1 — legacy palette
+        // sampling. rvRaw requests color=0 (raw dBZ grayscale), no smoothing,
+        // which _rvRawToDbz decodes exactly.
+        const color = frameInfo.rvRaw ? 0 : 2;
+        const opts = frameInfo.rvRaw ? '0_0' : '1_1';
+        return `${frameInfo.rvHost}${frameInfo.rvPath}/${RADAR_CFG.TILE_SIZE}/${RADAR_CFG.ZOOM}/${tileX}/${tileY}/${color}/${opts}.png`;
     }
     return null;
+}
+
+// Decode a RainViewer color-scheme-0 pixel: dBZ = (R & 127) − 32, high bit is
+// the snow flag, alpha 0 = no radar coverage. (Documented RV encoding.)
+// Returns null for no-echo / trace / implausible special values.
+function _rvRawToDbz(r, g, b, a) {
+    if (a < 20) return null;           // no coverage
+    const dbz = (r & 127) - 32;        // snow bit stripped — still precip
+    if (dbz <= 5) return null;         // clear-air / trace, below any threshold
+    if (dbz > 75) return 45;           // special/undefined core values → treat as heavy
+    return dbz;
 }
 
 // Load + decode a tile to ImageData, memoized per poll cycle. Stores the
@@ -148,7 +165,7 @@ function _getTileImageData(url) {
 // Sample a (2r+1)×(2r+1) neighborhood and return the median dBZ (or null).
 // Requires at least MIN_VALID_PIXELS valid pixels to return a result.
 // Median is robust against isolated artifact pixels that max would amplify.
-function _sampleNeighborhood(imgData, pxX, pxY, radius) {
+function _sampleNeighborhood(imgData, pxX, pxY, radius, decoder = _colorToDBZ) {
     const size = RADAR_CFG.TILE_SIZE;
     const x0 = Math.max(0, pxX - radius);
     const y0 = Math.max(0, pxY - radius);
@@ -161,7 +178,7 @@ function _sampleNeighborhood(imgData, pxX, pxY, radius) {
     for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
             const i = (y * size + x) * 4;
-            const dbz = _colorToDBZ(data[i], data[i + 1], data[i + 2], data[i + 3]);
+            const dbz = decoder(data[i], data[i + 1], data[i + 2], data[i + 3]);
             if (dbz !== null) {
                 valid.push(dbz);
                 _debugMatch++;
@@ -308,7 +325,8 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
     if (!imgData) return null;
 
     const r = RADAR_CFG.NEIGHBORHOOD_RADIUS;
-    let dbz = _sampleNeighborhood(imgData, pxX, pxY, r);
+    const decoder = frameInfo.rvRaw ? _rvRawToDbz : _colorToDBZ;
+    let dbz = _sampleNeighborhood(imgData, pxX, pxY, r, decoder);
 
     // Edge handling: if near tile boundary and neighborhood found nothing, try neighbor tile
     if (dbz === null && (
@@ -321,7 +339,7 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
             const nPxY = pxY < RADAR_CFG.EDGE_MARGIN ? RADAR_CFG.TILE_SIZE - 1 - r : (pxY > RADAR_CFG.TILE_SIZE - RADAR_CFG.EDGE_MARGIN ? r : pxY);
             const nUrl = _frameUrl(isUS, frameInfo, neighborX, neighborY);
             const nData = nUrl ? await _getTileImageData(nUrl) : null;
-            if (nData) dbz = _sampleNeighborhood(nData, nPxX, nPxY, r);
+            if (nData) dbz = _sampleNeighborhood(nData, nPxX, nPxY, r, decoder);
         }
     }
 
@@ -539,6 +557,7 @@ function resetRadarState() {
     _radarHistoryLoaded  = false;
     _radarHistoryPending = null;
     _radarFrames         = [];
+    _lastMotion          = null;
     _tileCache.clear();
 }
 
@@ -603,7 +622,38 @@ function _refineSubcell(shift, maxShift) {
     return { dx: shift.dx + fx, dy: shift.dy + fy };
 }
 
+// Last successful correlation vector — reused for up to MOTION_PERSIST_MS when
+// a fresh estimate fails (small cells drop in and out of the correlation grid;
+// storm motion doesn't change that fast).
+let _lastMotion = null;    // { vec, atMs }
+
+// PURE — motion estimate from steering-level wind (Open-Meteo 700 hPa, mph,
+// meteorological "from" direction). Storm heading = from + 180. Used only when
+// no radar correlation vector is available; consumers cap confidence at med.
+function _fallbackMotionFromWind(speedMph, dirFromDeg) {
+    if (speedMph === null || speedMph === undefined || dirFromDeg === null || dirFromDeg === undefined) return null;
+    if (speedMph < RADAR_CFG.MOTION_WIND_MIN_MPH) return null;
+    return {
+        speed_kmh: Math.round(speedMph * 1.609),
+        direction_deg: Math.round((dirFromDeg + 180) % 360),
+        dx: null, dy: null,
+        source: 'model-wind',
+    };
+}
+
 async function estimateMotionVector(lat, lon, isUS) {
+    const fresh = await _estimateMotionCorrelation(lat, lon, isUS);
+    if (fresh) {
+        _lastMotion = { vec: fresh, atMs: Date.now() };
+        return fresh;
+    }
+    if (_lastMotion && (Date.now() - _lastMotion.atMs) <= RADAR_CFG.MOTION_PERSIST_MS) {
+        return { ..._lastMotion.vec, source: 'persisted' };
+    }
+    return null;
+}
+
+async function _estimateMotionCorrelation(lat, lon, isUS) {
     if (_radarFrames.length < 3) return null;
 
     const recent = _radarFrames.slice(-3);
@@ -682,6 +732,7 @@ async function estimateMotionVector(lat, lon, isUS) {
         dy: sumDy / velocities.length,
         speed_kmh: Math.round(speed),
         direction_deg: Math.round(direction),
+        source: 'radar',
     };
 }
 
@@ -943,7 +994,7 @@ async function sampleRainviewerNowcast(lat, lon) {
         const minuteAhead = Math.round((f.time - nowSec) / 60);
         if (minuteAhead < 0) continue; // stale future frame
         const dbz = await _sampleFrameAtPoint(lat, lon, false, {
-            rvHost: maps.host, rvPath: f.path,
+            rvHost: maps.host, rvPath: f.path, rvRaw: true,
         });
         samples.push({ minuteAhead, dbz });
     }

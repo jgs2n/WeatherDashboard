@@ -44,6 +44,8 @@ RADAR_CFG = {
     'MOTION_GRID': 9,           # binary correlation grid size (9×9)
     'MOTION_MAX_SHIFT': 4,      # ± cells searched — resolves ~107 km/h at 5-min cadence
     'MOTION_MIN_OVERLAP': 3,    # min overlap score to accept a shift
+    'MOTION_PERSIST_MS': 15 * 60 * 1000,  # reuse last good vector this long
+    'MOTION_WIND_MIN_MPH': 8,   # min steering wind for model-wind fallback
     'EDGE_STEP_KM': 2,              # upstream march step (~1 px at zoom 6)
     'EDGE_MAX_LOOKAHEAD_MIN': 60,   # don't predict past the hour
     'EDGE_MAX_RANGE_KM': 120,       # march distance cap
@@ -121,7 +123,21 @@ def _color_to_dbz(r, g, b, a) -> Optional[int]:
     return best_dbz
 
 
-def _sample_neighborhood(img, px_x: int, px_y: int, radius: int) -> Optional[int]:
+def _rv_raw_to_dbz(r, g, b, a) -> Optional[int]:
+    """Decode a RainViewer color-scheme-0 pixel — parity with _rvRawToDbz (JS).
+    dBZ = (R & 127) − 32, high bit is the snow flag, alpha 0 = no coverage."""
+    if a < 20:
+        return None            # no coverage
+    dbz = (r & 127) - 32       # snow bit stripped — still precip
+    if dbz <= 5:
+        return None            # clear-air / trace, below any threshold
+    if dbz > 75:
+        return 45              # special/undefined core values → treat as heavy
+    return dbz
+
+
+def _sample_neighborhood(img, px_x: int, px_y: int, radius: int,
+                         decoder=_color_to_dbz) -> Optional[int]:
     """Sample a (2r+1)×(2r+1) neighborhood, return median dBZ or None."""
     tile = RADAR_CFG['TILE_SIZE']
     x0 = max(0, px_x - radius)
@@ -138,7 +154,7 @@ def _sample_neighborhood(img, px_x: int, px_y: int, radius: int) -> Optional[int
             else:
                 r, g, b = p
                 a = 255
-            dbz = _color_to_dbz(r, g, b, a)
+            dbz = decoder(r, g, b, a)
             if dbz is not None:
                 valid.append(dbz)
     if len(valid) < RADAR_CFG['MIN_VALID_PIXELS']:
@@ -183,6 +199,7 @@ class RadarSampler:
         self._last_valid_dbz_time: Optional[float] = None
         self._pending_on_count = 0
         self._history_loaded = False
+        self._last_motion: Optional[Dict] = None   # {'vec', 'atMs'} persistence
         # Per-poll tile cache, keyed by (timestamp, z, x, y). One zoom-6 tile
         # spans ~600 km, so motion-grid and upstream samples mostly hit the same
         # tile — caching collapses ~75 redundant fetches/poll into a handful.
@@ -220,10 +237,26 @@ class RadarSampler:
                                  if self._last_valid_dbz_time else None),
         }
 
-    def estimate_motion(self) -> Optional[Dict]:
+    def estimate_motion(self, now_ms: Optional[float] = None) -> Optional[Dict]:
+        """Motion vector with 15-min persistence — mirrors estimateMotionVector
+        (JS v1.51.0). Fresh correlation result when available (source 'radar');
+        else the last good vector within MOTION_PERSIST_MS (source 'persisted');
+        else None. now_ms injectable for tests."""
+        if now_ms is None:
+            now_ms = time.time() * 1000
+        fresh = self._estimate_motion_correlation()
+        if fresh:
+            self._last_motion = {'vec': fresh, 'atMs': now_ms}
+            return fresh
+        lm = getattr(self, '_last_motion', None)
+        if lm and (now_ms - lm['atMs']) <= RADAR_CFG['MOTION_PERSIST_MS']:
+            return {**lm['vec'], 'source': 'persisted'}
+        return None
+
+    def _estimate_motion_correlation(self) -> Optional[Dict]:
         """Coarse correlation-based motion vector with sub-cell refinement.
 
-        Mirrors estimateMotionVector (JS, v1.46.0): 9×9 grid, ±4-cell search
+        Mirrors _estimateMotionCorrelation (JS): 9×9 grid, ±4-cell search
         (resolves ~107 km/h; the old 5×5/±2 saturated at ~53 km/h), parabolic
         sub-cell peak interpolation, per-pair intervals from frame timestamps.
         Returns None if inconsistent.
@@ -300,6 +333,7 @@ class RadarSampler:
             'direction_deg': round(direction_deg),
             'dx': sum_dx / len(velocities),
             'dy': sum_dy / len(velocities),
+            'source': 'radar',
         }
 
     def build_timeline(self, current_dbz: Optional[int], is_raining: bool) -> Optional[List[Dict]]:
@@ -452,14 +486,15 @@ class RadarSampler:
             minute_ahead = round((f['time'] - now_sec) / 60)
             if minute_ahead < 0:
                 continue  # stale future frame
-            key = ('rv', f['path'], RADAR_CFG['ZOOM'], tile_x, tile_y)
+            key = ('rv0', f['path'], RADAR_CFG['ZOOM'], tile_x, tile_y)
             if key in self._tile_cache:
                 img = self._tile_cache[key]
             else:
                 img = fetch_rv_tile(maps['host'], f['path'], RADAR_CFG['ZOOM'],
                                     tile_x, tile_y, rv_limiter)
                 self._tile_cache[key] = img
-            dbz = (_sample_neighborhood(img, px_x, px_y, RADAR_CFG['NEIGHBORHOOD_RADIUS'])
+            dbz = (_sample_neighborhood(img, px_x, px_y, RADAR_CFG['NEIGHBORHOOD_RADIUS'],
+                                        decoder=_rv_raw_to_dbz)
                    if img is not None else None)
             samples.append({'minuteAhead': minute_ahead, 'dbz': dbz})
         return samples or None
@@ -621,6 +656,23 @@ def _find_trailing_edge(profile: List[Dict]) -> Optional[Dict]:
             return {'distKm': profile[edge_idx]['distKm'],
                     'wetExtentKm': profile[edge_idx - 1]['distKm'] if edge_idx > 0 else 0}
     return None
+
+
+def fallback_motion_from_wind(speed_mph: Optional[float],
+                              dir_from_deg: Optional[float]) -> Optional[Dict]:
+    """PURE — motion estimate from steering-level wind (700 hPa, mph, met
+    'from' direction) — parity with _fallbackMotionFromWind (JS). Storm heading
+    = from + 180. Consumers cap confidence at med for this source."""
+    if speed_mph is None or dir_from_deg is None:
+        return None
+    if speed_mph < RADAR_CFG['MOTION_WIND_MIN_MPH']:
+        return None
+    return {
+        'speed_kmh': round(speed_mph * 1.609),
+        'direction_deg': round((dir_from_deg + 180) % 360),
+        'dx': None, 'dy': None,
+        'source': 'model-wind',
+    }
 
 
 def derive_rv_timing(rv_samples: Optional[List[Dict]], is_raining: bool) -> Dict:

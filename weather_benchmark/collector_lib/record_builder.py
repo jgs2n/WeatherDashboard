@@ -70,6 +70,7 @@ def build_record(*, lat: float, lon: float, country: str, location_name: str,
         'lastValidDbzTime': radar_state.get('lastValidDbzTime'),
         'motionSpeed': motion.get('speed_kmh') if motion else None,
         'motionDir': motion.get('direction_deg') if motion else None,
+        'motionSource': motion.get('source') if motion else None,  # radar | persisted | model-wind
     } if radar_state else None)
 
     precip = ({

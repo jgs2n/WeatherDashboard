@@ -762,6 +762,16 @@ async function fetchWeatherDataDirect(lat, lon, location) {
         // and ensures the prediction uses the correct per-city precipitation
         // rate instead of a potentially stale cachedCurrentData global.
         const cur = openMeteoData?.current;
+        // Current-hour steering wind (700 hPa) for the motion-vector fallback
+        let steering = { speedMph: null, dirFromDeg: null };
+        const hh = openMeteoData?.hourly;
+        if (hh && hh.time && hh.wind_speed_700hPa) {
+            const nowIdx = Math.max(0, hh.time.findIndex(t => new Date(t) >= new Date()) - 1);
+            steering = {
+                speedMph:   hh.wind_speed_700hPa[nowIdx] ?? null,
+                dirFromDeg: hh.wind_direction_700hPa?.[nowIdx] ?? null,
+            };
+        }
         const modelCtx = cur ? {
             weatherCode:   cur.weather_code ?? null,
             precipProb:    null,   // not available in current endpoint
@@ -773,6 +783,8 @@ async function fetchWeatherDataDirect(lat, lon, location) {
             windSpeed:     cur.wind_speed_10m ?? null,
             windDir:       cur.wind_direction_10m ?? null,
             pressure:      cur.pressure_msl ?? null,
+            steeringSpeedMph:  steering.speedMph,
+            steeringDirFromDeg: steering.dirFromDeg,
         } : null;
         const nowSummary = await getNowSummary({
             lat, lon,

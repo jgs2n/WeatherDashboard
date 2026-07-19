@@ -70,6 +70,13 @@ async function getNowSummary({ lat, lon, country, modelWMO: explicitWMO, locatio
     } catch (err) {
         console.warn('[Nowcast] Motion estimation failed:', err.message);
     }
+    // Fallback: steering-level model wind when correlation (and its 15-min
+    // persistence) fail — convection often defeats the correlation grid.
+    // Downstream confidence is capped at med for model-wind motion.
+    if (!motion && explicitModelCtx && typeof _fallbackMotionFromWind === 'function') {
+        motion = _fallbackMotionFromWind(
+            explicitModelCtx.steeringSpeedMph, explicitModelCtx.steeringDirFromDeg);
+    }
 
     const currentDbz = radarState ? radarState.dbz : null;
     const isRaining  = radarState ? radarState.isRaining : false;
@@ -297,7 +304,10 @@ function _confShift(conf, delta) {
 }
 
 // PURE — apply memory rules. Returns { targetMs, confidence, memory }.
-function _applyPredictionMemory(memory, kind, newTargetMs, confidence, nowMs) {
+// maxConfidence caps the convergence boost — slope-only and model-wind
+// predictions can never be boosted to 'high' just by being consistent
+// (v1.51.0: a horizon-pegged slope value is consistent but not accurate).
+function _applyPredictionMemory(memory, kind, newTargetMs, confidence, nowMs, maxConfidence = 'high') {
     const fresh = { kind, targetMs: newTargetMs, updatedAtMs: nowMs, stableCount: 0 };
     if (!memory || memory.kind !== kind ||
         (nowMs - memory.updatedAtMs) > PRED_MEMORY_MAX_AGE_MS) {
@@ -307,7 +317,8 @@ function _applyPredictionMemory(memory, kind, newTargetMs, confidence, nowMs) {
     if (driftMin <= PRED_STABLE_DRIFT_MIN) {
         const stableCount = memory.stableCount + 1;
         const targetMs = Math.round(0.7 * newTargetMs + 0.3 * memory.targetMs);
-        const conf = stableCount >= 2 ? _confShift(confidence, +1) : confidence;
+        let conf = stableCount >= 2 ? _confShift(confidence, +1) : confidence;
+        if (_CONF_TIERS.indexOf(conf) > _CONF_TIERS.indexOf(maxConfidence)) conf = maxConfidence;
         return { targetMs, confidence: conf,
                  memory: { kind, targetMs, updatedAtMs: nowMs, stableCount } };
     }
@@ -334,7 +345,11 @@ function _clampPrecision(minutes, confidence) {
 }
 
 // PURE — slope tier from timeline wet buckets (legacy logic, capped at med).
-// Returns { minutes, tier, intermittent } or null when slope predicts nothing.
+// Returns { minutes, tier, intermittent, horizon } or null when slope predicts
+// nothing. Wet case: if the projection stays wet through the final bucket, the
+// "end" is just the timeline horizon, not a real clearing signal — v1.51.0
+// marks it horizon (minutes null) instead of emitting a perpetual "~55 min"
+// prediction that rolls forward every poll.
 function _slopeSignal(timeline, isRaining) {
     if (!timeline) return null;
     const wetBuckets = timeline.filter(b => b.precipClass > 0);
@@ -350,18 +365,24 @@ function _slopeSignal(timeline, isRaining) {
     const avgConf = wetBuckets.reduce((s, b) => s + b.confidence, 0) / wetBuckets.length;
     let tier = avgConf >= 0.7 ? 'high' : avgConf >= 0.4 ? 'med' : 'low';
     if (tier === 'high') tier = 'med'; // slope-only never exceeds med
+    const lastBucketMin = timeline[timeline.length - 1].minute;
+    if (isRaining && wetBuckets[wetBuckets.length - 1].minute >= lastBucketMin) {
+        return { minutes: null, tier, intermittent: runCount >= 3, horizon: true };
+    }
     const minutes = isRaining
         ? wetBuckets[wetBuckets.length - 1].minute   // last wet bucket ≈ clearing
         : wetBuckets[0].minute;                      // first wet bucket ≈ onset
-    return { minutes, tier, intermittent: runCount >= 3 };
+    return { minutes, tier, intermittent: runCount >= 3, horizon: false };
 }
 
 // PURE — fuse edge + slope for the dry case → { minutes, confidence, method }.
+// Model-wind fallback motion caps edge confidence at med.
 function _deriveDryTiming(edge, slope, motion) {
+    const observedMotion = motion && motion.source !== 'model-wind';
     if (edge && edge.beginInMin !== null) {
         const slopeAgrees = slope !== null;
         const fastEnough = motion && motion.speed_kmh >= 10;
-        if (edge.lateralHits >= 2 && fastEnough && slopeAgrees) {
+        if (edge.lateralHits >= 2 && fastEnough && slopeAgrees && observedMotion) {
             return { minutes: edge.beginInMin, confidence: 'high', method: 'edge' };
         }
         if (edge.lateralHits >= 2) {
@@ -409,17 +430,24 @@ function _applyRvConsensus(timing, rvMinutes) {
 }
 
 // PURE — fuse edge + slope for the wet case → { minutes, confidence, method }.
-// 'edge-horizon' = trailing edge beyond march range: rain continues all hour.
+// '*-horizon' = rain extends past the prediction range: continues all hour.
+// Model-wind fallback motion caps edge confidence at med (it's an estimate,
+// not an observed vector).
 function _deriveWetTiming(edge, slope, motion, edgeAttempted) {
+    const observedMotion = motion && motion.source !== 'model-wind';
     if (edge && edge.endInMin !== null) {
         const fastEnough = motion && motion.speed_kmh >= 10;
-        return { minutes: edge.endInMin, confidence: fastEnough ? 'high' : 'med', method: 'edge' };
+        return { minutes: edge.endInMin,
+                 confidence: (fastEnough && observedMotion) ? 'high' : 'med', method: 'edge' };
     }
     // Edge march ran (motion available) but found no trailing edge in range
     if (edgeAttempted && motion && motion.speed_kmh >= 5) {
         return { minutes: null, confidence: 'med', method: 'edge-horizon' };
     }
     if (slope !== null) {
+        if (slope.horizon) {
+            return { minutes: null, confidence: 'med', method: 'slope-horizon' };
+        }
         return { minutes: slope.minutes, confidence: slope.tier, method: 'slope' };
     }
     return { minutes: null, confidence: 'low', method: 'none' };
@@ -461,6 +489,12 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
             const rvTiming = _deriveRvTiming(rvSamples, isRaining);
             const rvMinutes = isRaining ? rvTiming.endInMin : rvTiming.beginInMin;
             timing = _applyRvConsensus(timing, rvMinutes);
+            // Consensus built on estimated (model-wind) motion caps at med —
+            // two model-derived signals agreeing is not observation-grade.
+            if (timing.method === 'consensus' && motion && motion.source === 'model-wind'
+                && timing.confidence === 'high') {
+                timing = { ...timing, confidence: 'med' };
+            }
         }
     } catch (err) {
         console.warn('[Nowcast] RainViewer nowcast failed:', err.message);
@@ -473,8 +507,12 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
     let confidence = timing.confidence;
     if (rawMinutes !== null) {
         const kind = isRaining ? 'end' : 'begin';
+        // Boost ceiling: only observed-motion edge/consensus can reach high
+        const observedMotion = motion && motion.source !== 'model-wind';
+        const maxConf = ((timing.method === 'edge' || timing.method === 'consensus') && observedMotion)
+            ? 'high' : 'med';
         const applied = _applyPredictionMemory(
-            _predMemory, kind, nowMs + rawMinutes * 60000, confidence, nowMs);
+            _predMemory, kind, nowMs + rawMinutes * 60000, confidence, nowMs, maxConf);
         _predMemory = applied.memory;
         rawMinutes = Math.max(0, Math.round((applied.targetMs - nowMs) / 60000));
         confidence = applied.confidence;
@@ -524,8 +562,9 @@ function _summarizeTrend({ timeline, isRaining, minutes, confidence, method, int
 
     if (isRaining) {
         if (minutes === null) {
-            if (method === 'edge-horizon') return { text: 'Rain continuing this hour', confidence: 'med' };
-            if (method === 'none' && !timeline) return { text: 'Rain now, clearing later', confidence: 'low' };
+            if (method === 'edge-horizon' || method === 'slope-horizon') {
+                return { text: 'Rain continuing this hour', confidence: 'med' };
+            }
             return { text: 'Rain now, clearing later', confidence: 'low' };
         }
         if (confidence === 'high') {

@@ -4,9 +4,27 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '0.9.1';
 
 const CHANGELOG = [
+    {
+        version: '0.9.1',
+        date: '2026-07-19',
+        features: [
+            {
+                title: 'Honest "Rain Continuing" Wording',
+                desc: 'Fixed a bias found in three days of benchmark data: when rain persisted, the fallback predictor kept saying "tapering off in ~50–60 min" and rolling the number forward every poll — technically consistent, never true. Projections that stay wet through the whole hour now say "Rain continuing this hour", and consistency alone can no longer promote a fallback prediction to high confidence.'
+            },
+            {
+                title: 'Storm Motion Fallback',
+                desc: 'The motion vector was only measurable from radar in about 12% of rainy polls (scattered summer cells defeat frame correlation), starving the accurate edge-based timing method. Now a good vector persists for 15 minutes, and when radar correlation fails entirely, the 700 mb steering wind from the forecast model fills in — capped at medium confidence since it is an estimate, not an observation.'
+            },
+            {
+                title: 'RainViewer Nowcast Actually Works Now',
+                desc: 'The RainViewer consensus signal never fired in three days: its "universal blue" tiles use colors our radar palette matcher rejects (a test tile had 994 rain pixels, zero matched). Switched to RainViewer\'s raw data encoding (color scheme 0), which stores exact dBZ values in each pixel — no color matching at all.'
+            }
+        ]
+    },
     {
         version: '0.9.0',
         date: '2026-07-16',
