@@ -4,9 +4,23 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.9.2';
 
 const CHANGELOG = [
+    {
+        version: '0.9.2',
+        date: '2026-07-19',
+        features: [
+            {
+                title: 'Lightning Ingest Hardened',
+                desc: 'A reliability audit found GLM lightning ingest could silently starve for hours: when the satellite data feed publishes files with more than 3 minutes of latency, every file was rejected as "too old" and the app kept showing no lightning while appearing connected. The age window is now 10 minutes with a newest-file fallback, so high-latency periods degrade to slightly delayed data instead of none.'
+            },
+            {
+                title: 'Honest "Data Unavailable" Indicator',
+                desc: 'When lightning data goes stale during heavy rain or storm conditions, the storm lane now says "⚠ Lightning data unavailable" instead of silently showing nothing. Absence of a warning should never be mistaken for absence of lightning — if you can hear thunder, you are in range.'
+            }
+        ]
+    },
     {
         version: '0.9.1',
         date: '2026-07-19',

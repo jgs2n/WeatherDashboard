@@ -5,3 +5,4 @@ numpy>=1.24
 Pillow>=10.0     # collector reads NEXRAD tile PNGs
 h5py>=3.8        # reads GOES GLM L2 LCFA NetCDF4/HDF5 files (lightning)
 pytest>=7.0      # runs the validation test suite
+websocket-client>=1.6   # Blitzortung ground-truth recorder (validation only)

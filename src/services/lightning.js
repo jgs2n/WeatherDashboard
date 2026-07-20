@@ -53,7 +53,11 @@ const LIGHTNING_CFG = {
     S3_SAT_SELECT: 'auto',          // 'auto' | 'east' | 'west'
     S3_PRODUCT_PREFIX: 'GLM-L2-LCFA',
     S3_MAX_FILES_PER_POLL: 5,       // cap after time-based filtering
-    S3_FILE_MAX_AGE_MS: 3 * 60 * 1000,  // only fetch files with embedded ts ≤ 3 min old
+    // v1.52.0: raised 3 → 10 min. GOES S3 publication latency sometimes exceeds
+    // 3 min for hours at a stretch; the old gate then rejected EVERY file and
+    // ingest silently starved (a 23 h outage was measured in the collector on
+    // 2026-07-16/17 while "connected" stayed true).
+    S3_FILE_MAX_AGE_MS: 10 * 60 * 1000, // only fetch files with embedded ts ≤ 10 min old
     S3_FILE_SIZE_CAP: 2 * 1024 * 1024,  // skip files > 2 MB
 
     // ── Fetch timeout ────────────────────────────────────────────────────────
@@ -365,7 +369,7 @@ async function _listAndFilter(bucket, utcDate, nowMs, signal) {
     const cutoff = nowMs - LIGHTNING_CFG.S3_FILE_MAX_AGE_MS;
     const maxSize = LIGHTNING_CFG.S3_FILE_SIZE_CAP;
 
-    return entries.filter(({ key, size }) => {
+    const unseen = entries.filter(({ key, size }) => {
         if (_lxSeenFiles.has(key)) return false;
         if (size > maxSize) {
             if (!_lxSizeWarnLogged) {
@@ -374,9 +378,16 @@ async function _listAndFilter(bucket, utcDate, nowMs, signal) {
             }
             return false;
         }
+        return true;
+    });
+    const fresh = unseen.filter(({ key }) => {
         const ts = _extractFileTimestamp(key);
         return ts !== null && ts >= cutoff;
     });
+    if (fresh.length > 0) return fresh;
+    // Latency fallback: everything is "too old" (S3 publication lag) — take the
+    // newest unseen file anyway so ingest degrades to laggy instead of dead.
+    return unseen.slice(-1);
 }
 
 // ── Adapter boundary: GLM data fetch ─────────────────────────────────────────

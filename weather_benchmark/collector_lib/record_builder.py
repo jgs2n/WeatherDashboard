@@ -61,6 +61,7 @@ def build_record(*, lat: float, lon: float, country: str, location_name: str,
         'source': lightning_state.get('source'),
         'connected': lightning_state.get('connected'),
         'bufferAgeMs': lightning_state.get('bufferAgeMs'),
+        'lastFlashAt': lightning_state.get('lastFlashAt'),  # ingest-health audit field
     } if lightning_state else None)
 
     radar = ({

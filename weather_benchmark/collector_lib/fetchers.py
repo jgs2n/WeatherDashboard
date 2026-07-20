@@ -117,7 +117,9 @@ def fetch_iem_latest_metar(station: str, limiter: TokenBucket) -> Optional[dict]
         'format':   'onlycomma',
         'latlon':   'no',
         'direct':   'no',
-        'report_type': '1',
+        # v1.52.0: '1' (5-min feed) returns rows with wxcodes='M' — thunder and
+        # virga signals starved. '3,4' = routine + special METARs with wxcodes.
+        'report_type': '3,4',
     }
     try:
         r = requests.get(IEM_ASOS_URL, params=params, timeout=15)

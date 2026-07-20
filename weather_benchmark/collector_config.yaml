@@ -13,11 +13,18 @@ nexrad_tile_concurrency: 4      # Parallel tile fetches per radar poll
 # GLM lightning (one shared fetcher across all cities)
 glm_poll_interval_sec: 60
 glm_enabled: true
-glm_satellite: east             # east (G19) | west (G18) — G19 covers all CONUS cities
+glm_satellite: auto             # auto (per-city by longitude) | east (G19) | west (G18)
+                                # G19 coverage is marginal west of ~106°W — Seattle needs G18
 
 # RainViewer nowcast cross-check (consensus signal for rain timing).
 # Set false to measure edge-only timing in a backtest comparison.
 rainviewer_enabled: true
+
+# Blitzortung ground-truth recorder (VALIDATION ONLY — never a warning source).
+# Records community-network strikes to data/lightning_truth/ so lightning_eval.py
+# can verify GLM warnings with km-accurate, independent strike locations.
+# Requires: pip install websocket-client
+blitzortung_truth_enabled: true
 
 # Open-Meteo caching (10k/day free tier; cache hourly forecast aggressively)
 openmeteo_hourly_cache_min: 30  # Re-fetch hourly forecast only after this many minutes

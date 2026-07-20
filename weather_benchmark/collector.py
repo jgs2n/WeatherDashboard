@@ -39,10 +39,53 @@ from collector_lib.fetchers import (
     extract_model_context, extract_hourly_context,
 )
 from collector_lib.lightning import empty_lightning_state, GlmFetcher
+from collector_lib.blitzortung_truth import BlitzortungRecorder
 from collector_lib import nowcast as nc
 from collector_lib.record_builder import build_record
 
 logger = logging.getLogger('collector')
+
+
+GLM_WEST_LON_THRESHOLD = -106.0   # west of this → GOES-West (browser auto-select parity)
+
+
+class MultiGlm:
+    """Routes each city's summarize() to the satellite that covers it.
+
+    GOES-East (G19) GLM coverage is marginal west of ~106°W (Seattle sat at the
+    limb and got no flashes). glm_satellite: auto spawns one fetcher per needed
+    satellite; 'east'/'west' keep the old single-fetcher behavior.
+    """
+
+    def __init__(self, fetchers_by_sat):
+        self.fetchers = fetchers_by_sat   # {'east': GlmFetcher, 'west': GlmFetcher}
+
+    def start(self):
+        for f in self.fetchers.values():
+            f.start()
+
+    def stop(self, timeout: float = 5.0):
+        for f in self.fetchers.values():
+            f.stop(timeout)
+
+    def poll_once(self):
+        return sum(f.poll_once() for f in self.fetchers.values())
+
+    def summarize(self, lat, lon):
+        key = 'west' if (lon < GLM_WEST_LON_THRESHOLD and 'west' in self.fetchers) else 'east'
+        f = self.fetchers.get(key) or next(iter(self.fetchers.values()))
+        return f.summarize(lat, lon)
+
+
+def _build_glm(config, cities):
+    """GLM fetcher(s) per config. 'auto' picks satellites from city longitudes."""
+    sat = (config.get('glm_satellite') or 'east').lower()
+    if sat != 'auto':
+        return GlmFetcher(config)
+    needed = {('west' if c['lon'] < GLM_WEST_LON_THRESHOLD else 'east') for c in cities}
+    fetchers = {s: GlmFetcher({**config, 'glm_satellite': s}) for s in sorted(needed)}
+    logger.info('GLM auto satellite selection: %s', ', '.join(sorted(needed)))
+    return MultiGlm(fetchers) if len(fetchers) > 1 else next(iter(fetchers.values()))
 
 
 def _extract_steering_wind(om_hourly_resp):
@@ -322,7 +365,7 @@ def main():
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, handle_signal)
 
-    glm = GlmFetcher(config) if config.get('glm_enabled', True) else None
+    glm = _build_glm(config, all_cities) if config.get('glm_enabled', True) else None
     # RainViewer nowcast cross-check — own limiter (separate host from IEM)
     rv_limiter = (TokenBucket(rps=2, burst=4)
                   if config.get('rainviewer_enabled', True) else None)
@@ -351,6 +394,15 @@ def main():
 
     if glm:
         glm.start()
+
+    # Blitzortung ground-truth recorder (validation only, see blitzortung_truth.py)
+    if config.get('blitzortung_truth_enabled', False):
+        truth_dir = str(HERE / 'data' / 'lightning_truth')
+        bo = BlitzortungRecorder(truth_dir,
+                                 BlitzortungRecorder.bbox_for_cities(all_cities),
+                                 stop_event)
+        bo.start()
+        logger.info('Blitzortung truth recorder started -> %s', truth_dir)
 
     workers = []
     for i, city in enumerate(all_cities):

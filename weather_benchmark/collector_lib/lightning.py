@@ -106,7 +106,11 @@ S3_BUCKET_EAST = 'https://noaa-goes19.s3.amazonaws.com'   # GOES-East (G19)
 S3_BUCKET_WEST = 'https://noaa-goes18.s3.amazonaws.com'   # GOES-West (G18)
 S3_PRODUCT_PREFIX = 'GLM-L2-LCFA'
 S3_MAX_FILES_PER_POLL = 5               # cap after time-based filtering
-S3_FILE_MAX_AGE_MS = 3 * 60 * 1000      # only fetch files whose embedded ts <= 3 min old
+# v1.52.0: raised 3 -> 10 min. GOES S3 publication latency sometimes exceeds
+# 3 min for hours; the old gate then rejected EVERY file and ingest silently
+# starved (measured 23 h outage on 2026-07-16/17 while 'connected' stayed true).
+S3_FILE_MAX_AGE_MS = 10 * 60 * 1000     # only fetch files whose embedded ts <= 10 min old
+INGEST_STARVED_WARN_MS = 30 * 60 * 1000  # warn when no files ingested this long
 S3_FILE_SIZE_CAP = 2 * 1024 * 1024      # skip files > 2 MB
 SEEN_FILE_TTL_MS = 60 * 60 * 1000       # forget processed S3 keys after 60 min
 
@@ -373,6 +377,7 @@ class GlmFetcher:
         sat = (config.get('glm_satellite') or 'east').lower()
         self.bucket = S3_BUCKET_WEST if sat == 'west' else S3_BUCKET_EAST
         self.session = session or requests.Session()
+        self._last_ingest_ms: Optional[float] = time.time() * 1000.0  # watchdog baseline
         self._buffer: List[Dict] = []
         self._dedup = set()
         self._seen_files: Dict[str, float] = {}
@@ -437,6 +442,18 @@ class GlmFetcher:
         if new_flashes:
             logger.info('GLM: +%d flash(es) from %d file(s)',
                         len(new_flashes), len(files))
+            self._last_ingest_ms = now_ms
+        else:
+            # Starvation watchdog: listing keeps succeeding but nothing ingests.
+            # This is the silent-outage mode measured on 2026-07-16/17.
+            last = getattr(self, '_last_ingest_ms', None)
+            if last is not None and (now_ms - last) > INGEST_STARVED_WARN_MS:
+                logger.warning('GLM ingest starved: no files ingested for %.0f min '
+                               '(listing ok=%s) — resetting HTTP session',
+                               (now_ms - last) / 60000, ok)
+                import requests
+                self.session = requests.Session()
+                self._last_ingest_ms = now_ms  # re-arm so we warn every 30 min, not every poll
         return len(new_flashes)
 
     def _list_recent(self, now_ms: float):
@@ -461,13 +478,17 @@ class GlmFetcher:
         except Exception:
             return False, []
         cutoff = now_ms - S3_FILE_MAX_AGE_MS
+        unseen = [(k, s) for k, s in entries
+                  if k not in self._seen_files and s <= S3_FILE_SIZE_CAP]
         usable = []
-        for key, size in entries:
-            if key in self._seen_files or size > S3_FILE_SIZE_CAP:
-                continue
+        for key, size in unseen:
             ts = extract_file_timestamp_ms(key)
             if ts is not None and ts >= cutoff:
                 usable.append((key, size))
+        if not usable and unseen:
+            # Latency fallback: everything is "too old" (S3 publication lag) —
+            # take the newest unseen file so ingest degrades to laggy, not dead.
+            usable = unseen[-1:]
         return True, usable
 
     # -- buffer --

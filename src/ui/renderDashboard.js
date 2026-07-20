@@ -762,6 +762,17 @@ function _deriveBlueLaneState(nowSummary) {
     const isWet = ps && ps.phenomenon !== 'dry';
     const hasTrend = trend && trend.summary;
 
+    // GLM ingest health (v1.52.0): the GLM buffer receives flashes from the
+    // whole satellite disk — 30+ min with nothing ingested means the data
+    // feed is stale, not that the Americas went quiet. During convective
+    // conditions, absence of a warning must not read as absence of lightning.
+    const GLM_STALE_MS = 30 * 60 * 1000;
+    const glmStale = !ls || ls.source === 'unavailable' || ls.connected === false ||
+        (ls.bufferAgeMs != null && ls.bufferAgeMs > GLM_STALE_MS);
+    const convective = ps && (ps.phenomenon === 'heavy rain' || ps.phenomenon === 'thunderstorm');
+    const staleNote = (glmStale && convective && (!ls || ls.state === 'none'))
+        ? '⚠ Lightning data unavailable' : null;
+
     // Lightning active within 10mi (GLM: broader threshold than point-strike)
     if (ls && ls.state === 'active' && ls.nearestFlashMi != null && ls.nearestFlashMi <= 10) {
         return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: '' };
@@ -785,12 +796,12 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Rain with no lightning
     if (isWet) {
-        const sec = hasTrend ? trend.summary : '';
+        const sec = staleNote || (hasTrend ? trend.summary : '');
         return { cls: 'storm-rain', status: 'Rain nearby', secondary: sec };
     }
     // Trend predicts rain soon but not wet yet
     if (hasTrend) {
-        return { cls: 'storm-rain', status: 'Rain expected', secondary: trend.summary };
+        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trend.summary };
     }
     return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
 }

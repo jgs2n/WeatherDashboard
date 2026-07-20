@@ -172,7 +172,11 @@ def _fetch_day(station: str, day: date) -> pd.DataFrame:
         'format': 'onlycomma',
         'latlon': 'no',
         'direct': 'no',
-        'report_type': '1',
+        # v1.52.0: report_type '1' now returns ZERO rows from IEM (semantics
+        # changed upstream) — the scorer silently fell back to thunder-less
+        # sources and lightning FAR pinned at 100%. '3,4' = routine + special
+        # METARs with wxcodes.
+        'report_type': '3,4',
     }
 
     logger.info(f'Fetching IEM ASOS: {station} {day}')
