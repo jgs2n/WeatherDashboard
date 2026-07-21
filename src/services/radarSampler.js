@@ -43,6 +43,7 @@ const RADAR_CFG = {
     EDGE_DRY_GAP_SAMPLES:   4,   // ~8 km sustained dry to declare trailing edge
     EDGE_DRY_DBZ:           15,  // below this counts as dry for trailing edge
     EDGE_LATERAL_KM:        3,   // ± km perpendicular spread for track check
+    EDGE_INTENSITY_DEPTH_KM: 16, // echo depth past the edge to characterize intensity
     BEGIN_SIGNAL_DBZ:   18,      // min dBZ in any recent frame to allow "begin" prediction
     END_SIGNAL_DBZ:     30,      // min dBZ in any recent frame to allow "end" prediction
     IEM_BASE:           'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0',
@@ -930,6 +931,21 @@ function _findTrailingEdge(profile) {
     return null;
 }
 
+// PURE — representative intensity of what's arriving: median dBZ of wet
+// samples in the EDGE_INTENSITY_DEPTH_KM of echo just past the leading edge.
+// Returns null when nothing qualifies (caller falls back to plain "Rain").
+function _edgeIntensityDbz(profile, edgeDistKm) {
+    const maxKm = edgeDistKm + RADAR_CFG.EDGE_INTENSITY_DEPTH_KM;
+    const vals = profile
+        .filter(p => p.distKm >= edgeDistKm && p.distKm <= maxKm &&
+                     p.dbz !== null && p.dbz >= RADAR_CFG.BEGIN_SIGNAL_DBZ)
+        .map(p => p.dbz)
+        .sort((a, b) => a - b);
+    if (vals.length === 0) return null;
+    const mid = Math.floor(vals.length / 2);
+    return vals.length % 2 === 0 ? Math.round((vals[mid - 1] + vals[mid]) / 2) : vals[mid];
+}
+
 // Track-over-point check at the edge: center + ±EDGE_LATERAL_KM perpendicular.
 // Returns 0–3 hits at ≥ BEGIN_SIGNAL_DBZ.
 async function _lateralSpreadHits(lat, lon, isUS, frameInfo, motion, distKm) {
@@ -965,6 +981,7 @@ async function sampleEdgeTiming(lat, lon, isUS, motion, isRaining) {
         return {
             beginInMin, endInMin: null,
             edgeDistKm: edge.distKm, closingSpeedKmh: motion.speed_kmh, lateralHits,
+            intensityDbz: _edgeIntensityDbz(profile, edge.distKm),
         };
     }
 
@@ -1005,16 +1022,18 @@ async function sampleRainviewerNowcast(lat, lon) {
 // and first wet frame (frames are 10 min apart, so ±5 min quantization);
 // end ≈ midpoint of last wet and first dry frame.
 function _deriveRvTiming(rvSamples, isRaining) {
-    const NONE = { beginInMin: null, endInMin: null };
+    const NONE = { beginInMin: null, endInMin: null, intensityDbz: null };
     if (!rvSamples || rvSamples.length === 0) return NONE;
     let prevMinute = 0;
     for (const s of rvSamples) {
         const wet = s.dbz !== null && s.dbz >= RADAR_CFG.ON_THRESHOLD;
         if (!isRaining && wet) {
-            return { beginInMin: Math.round((prevMinute + s.minuteAhead) / 2), endInMin: null };
+            return { beginInMin: Math.round((prevMinute + s.minuteAhead) / 2),
+                     endInMin: null, intensityDbz: s.dbz };
         }
         if (isRaining && !wet) {
-            return { beginInMin: null, endInMin: Math.round((prevMinute + s.minuteAhead) / 2) };
+            return { beginInMin: null, endInMin: Math.round((prevMinute + s.minuteAhead) / 2),
+                     intensityDbz: null };
         }
         prevMinute = s.minuteAhead;
     }

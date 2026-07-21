@@ -53,6 +53,7 @@ RADAR_CFG = {
     'EDGE_DRY_GAP_SAMPLES': 4,      # ~8 km sustained dry to declare trailing edge
     'EDGE_DRY_DBZ': 15,             # below this counts as dry for trailing edge
     'EDGE_LATERAL_KM': 3,           # ± km perpendicular spread for track check
+    'EDGE_INTENSITY_DEPTH_KM': 16,  # echo depth past the edge to characterize intensity
     'BEGIN_SIGNAL_DBZ': 18,
     'END_SIGNAL_DBZ': 30,
 }
@@ -457,7 +458,8 @@ class RadarSampler:
             return {'beginInMin': begin_in_min, 'endInMin': None,
                     'edgeDistKm': edge['distKm'],
                     'closingSpeedKmh': motion['speed_kmh'],
-                    'lateralHits': lateral_hits}
+                    'lateralHits': lateral_hits,
+                    'intensityDbz': _edge_intensity_dbz(profile, edge['distKm'])}
 
         edge = _find_trailing_edge(profile)
         if not edge:
@@ -638,6 +640,21 @@ def _find_leading_edge(profile: List[Dict]) -> Optional[Dict]:
     return None
 
 
+def _edge_intensity_dbz(profile: List[Dict], edge_dist_km: float) -> Optional[int]:
+    """PURE — median dBZ of wet samples in the EDGE_INTENSITY_DEPTH_KM of echo
+    just past the leading edge. Parity with _edgeIntensityDbz (JS)."""
+    max_km = edge_dist_km + RADAR_CFG['EDGE_INTENSITY_DEPTH_KM']
+    vals = sorted(p['dbz'] for p in profile
+                  if edge_dist_km <= p['distKm'] <= max_km
+                  and p['dbz'] is not None and p['dbz'] >= RADAR_CFG['BEGIN_SIGNAL_DBZ'])
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    if len(vals) % 2 == 0:
+        return round((vals[mid - 1] + vals[mid]) / 2)
+    return vals[mid]
+
+
 def _find_trailing_edge(profile: List[Dict]) -> Optional[Dict]:
     """PURE — start of the first run of ≥ EDGE_DRY_GAP_SAMPLES consecutive dry
     samples (dBZ < EDGE_DRY_DBZ or no echo). The ~8 km gap requirement keeps a
@@ -679,7 +696,7 @@ def derive_rv_timing(rv_samples: Optional[List[Dict]], is_raining: bool) -> Dict
     """PURE — begin/end from RainViewer nowcast samples. Begin ≈ midpoint of
     last-dry/first-wet frame (10-min frames → ±5 min quantization); end ≈
     midpoint of last-wet/first-dry frame. Parity with _deriveRvTiming (JS)."""
-    none = {'beginInMin': None, 'endInMin': None}
+    none = {'beginInMin': None, 'endInMin': None, 'intensityDbz': None}
     if not rv_samples:
         return none
     prev_minute = 0
@@ -687,10 +704,11 @@ def derive_rv_timing(rv_samples: Optional[List[Dict]], is_raining: bool) -> Dict
         wet = s['dbz'] is not None and s['dbz'] >= RADAR_CFG['ON_THRESHOLD']
         if not is_raining and wet:
             return {'beginInMin': round((prev_minute + s['minuteAhead']) / 2),
-                    'endInMin': None}
+                    'endInMin': None, 'intensityDbz': s['dbz']}
         if is_raining and not wet:
             return {'beginInMin': None,
-                    'endInMin': round((prev_minute + s['minuteAhead']) / 2)}
+                    'endInMin': round((prev_minute + s['minuteAhead']) / 2),
+                    'intensityDbz': None}
         prev_minute = s['minuteAhead']
     return none
 

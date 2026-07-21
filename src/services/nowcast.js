@@ -375,6 +375,15 @@ function _slopeSignal(timeline, isRaining) {
     return { minutes, tier, intermittent: runCount >= 3, horizon: false };
 }
 
+// PURE — intensity prefix from observed edge dBZ. Null (nothing observed /
+// slope projections) renders plain 'Rain' — identical to pre-intensity wording.
+function _intensityWord(dbz) {
+    if (dbz === null || dbz === undefined) return 'Rain';
+    if (dbz >= 40) return 'Heavy rain';
+    if (dbz < 28) return 'Light rain';
+    return 'Rain';
+}
+
 // PURE — fuse edge + slope for the dry case → { minutes, confidence, method }.
 // Model-wind fallback motion caps edge confidence at med.
 function _deriveDryTiming(edge, slope, motion) {
@@ -382,18 +391,19 @@ function _deriveDryTiming(edge, slope, motion) {
     if (edge && edge.beginInMin !== null) {
         const slopeAgrees = slope !== null;
         const fastEnough = motion && motion.speed_kmh >= 10;
+        const intensityDbz = edge.intensityDbz !== undefined ? edge.intensityDbz : null;
         if (edge.lateralHits >= 2 && fastEnough && slopeAgrees && observedMotion) {
-            return { minutes: edge.beginInMin, confidence: 'high', method: 'edge' };
+            return { minutes: edge.beginInMin, confidence: 'high', method: 'edge', intensityDbz };
         }
         if (edge.lateralHits >= 2) {
-            return { minutes: edge.beginInMin, confidence: 'med', method: 'edge' };
+            return { minutes: edge.beginInMin, confidence: 'med', method: 'edge', intensityDbz };
         }
-        return { minutes: edge.beginInMin, confidence: 'low', method: 'edge' };
+        return { minutes: edge.beginInMin, confidence: 'low', method: 'edge', intensityDbz };
     }
     if (slope !== null) {
-        return { minutes: slope.minutes, confidence: slope.tier, method: 'slope' };
+        return { minutes: slope.minutes, confidence: slope.tier, method: 'slope', intensityDbz: null };
     }
-    return { minutes: null, confidence: 'low', method: 'none' };
+    return { minutes: null, confidence: 'low', method: 'none', intensityDbz: null };
 }
 
 // ── RainViewer nowcast consensus ─────────────────────────────────────────────
@@ -407,7 +417,7 @@ const RV_DISAGREE_MIN = 20; // |edge − rv| > this → cap edge at med
 //                          cold-start / no-motion cases, incl. internationally
 //   slope / edge-horizon → unchanged (RV never overrides a live-radar signal
 //                          that already has its own fallback semantics)
-function _applyRvConsensus(timing, rvMinutes) {
+function _applyRvConsensus(timing, rvMinutes, rvIntensityDbz = null) {
     if (rvMinutes === null || rvMinutes === undefined) return timing;
     if (timing.method === 'edge' && timing.minutes !== null) {
         const diff = Math.abs(timing.minutes - rvMinutes);
@@ -416,15 +426,18 @@ function _applyRvConsensus(timing, rvMinutes) {
                 minutes: Math.round(0.7 * timing.minutes + 0.3 * rvMinutes),
                 confidence: _confShift(timing.confidence, +1),
                 method: 'consensus',
+                intensityDbz: timing.intensityDbz ?? null,   // edge's observed echo wins
             };
         }
         if (diff > RV_DISAGREE_MIN && timing.confidence === 'high') {
-            return { minutes: timing.minutes, confidence: 'med', method: 'edge' };
+            return { minutes: timing.minutes, confidence: 'med', method: 'edge',
+                     intensityDbz: timing.intensityDbz ?? null };
         }
         return timing;
     }
     if (timing.method === 'none') {
-        return { minutes: rvMinutes, confidence: 'med', method: 'rv' };
+        return { minutes: rvMinutes, confidence: 'med', method: 'rv',
+                 intensityDbz: rvIntensityDbz };
     }
     return timing;
 }
@@ -488,7 +501,7 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
             const rvSamples = await sampleRainviewerNowcast(lat, lon);
             const rvTiming = _deriveRvTiming(rvSamples, isRaining);
             const rvMinutes = isRaining ? rvTiming.endInMin : rvTiming.beginInMin;
-            timing = _applyRvConsensus(timing, rvMinutes);
+            timing = _applyRvConsensus(timing, rvMinutes, rvTiming.intensityDbz);
             // Consensus built on estimated (model-wind) motion caps at med —
             // two model-derived signals agreeing is not observation-grade.
             if (timing.method === 'consensus' && motion && motion.source === 'model-wind'
@@ -526,6 +539,7 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
         confidence,
         method: timing.method,
         intermittent: slope ? slope.intermittent : false,
+        intensityDbz: timing.intensityDbz !== undefined ? timing.intensityDbz : null,
         nowMs,
         utcOffsetSec: (typeof cachedUtcOffsetSec !== 'undefined') ? cachedUtcOffsetSec : null,
     });
@@ -541,6 +555,7 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
             distKm: edge.edgeDistKm,
             speedKmh: edge.closingSpeedKmh,
             lateralHits: edge.lateralHits,
+            intensityDbz: edge.intensityDbz !== undefined ? edge.intensityDbz : null,
         } : null,
     };
 }
@@ -553,7 +568,7 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
 //   low  → vague strings only, never minute digits ≤ 10
 // Returns { text, confidence } or null if nothing to say.
 
-function _summarizeTrend({ timeline, isRaining, minutes, confidence, method, intermittent, nowMs, utcOffsetSec }) {
+function _summarizeTrend({ timeline, isRaining, minutes, confidence, method, intermittent, intensityDbz, nowMs, utcOffsetSec }) {
     // Intermittent cells (3+ wet runs in slope timeline) — slope path only;
     // the edge march has its own gap handling (EDGE_DRY_GAP_SAMPLES).
     if (method === 'slope' && intermittent) {
@@ -577,14 +592,16 @@ function _summarizeTrend({ timeline, isRaining, minutes, confidence, method, int
         return { text: 'Rain now, clearing later', confidence: 'low' };
     }
 
-    // Dry case
+    // Dry case — intensity prefix only from observed echo (edge/consensus/rv);
+    // null intensity renders plain "Rain …", identical to pre-intensity wording.
     if (minutes === null) return null;
+    const word = _intensityWord(intensityDbz);
     if (confidence === 'high') {
         const t = formatClockTimeRounded(nowMs + minutes * 60000, 5, utcOffsetSec);
-        return { text: `Rain starting ~${t}`, confidence: 'high' };
+        return { text: `${word} starting ~${t}`, confidence: 'high' };
     }
     if (confidence === 'med') {
-        return { text: `Rain likely in ~${Math.max(5, minutes - 5)}–${minutes + 5} min`, confidence: 'med' };
+        return { text: `${word} likely in ~${Math.max(5, minutes - 5)}–${minutes + 5} min`, confidence: 'med' };
     }
     return { text: 'Showers possible soon', confidence: 'low' };
 }

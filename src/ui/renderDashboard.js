@@ -753,6 +753,12 @@ function updateYellowLane(spcData) {
     }
 }
 
+// Compact confidence meter appended to trend text (v1.52.0):
+// ●●● high · ●●○ med · ●○○ low
+function _confDots(conf) {
+    return { high: '●●●', med: '●●○', low: '●○○' }[conf] || '';
+}
+
 function _deriveBlueLaneState(nowSummary) {
     if (!nowSummary) return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
 
@@ -761,6 +767,9 @@ function _deriveBlueLaneState(nowSummary) {
     const trend = nowSummary.precipTrend60m;
     const isWet = ps && ps.phenomenon !== 'dry';
     const hasTrend = trend && trend.summary;
+    // Trend text + confidence dots (staleNote below never gets dots)
+    const trendSec = hasTrend
+        ? `${trend.summary} ${_confDots(trend.summaryConfidence)}`.trim() : '';
 
     // GLM ingest health (v1.52.0): the GLM buffer receives flashes from the
     // whole satellite disk — 30+ min with nothing ingested means the data
@@ -779,14 +788,12 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Lightning active or nearby (>10mi)
     if (ls && (ls.state === 'active' || ls.state === 'nearby')) {
-        const sec = hasTrend ? trend.summary : '';
-        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: sec };
+        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: trendSec };
     }
     // Lightning approaching
     if (ls && ls.state === 'approaching') {
         if (ls._isApproaching) {
-            const sec = hasTrend ? trend.summary : '';
-            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: sec };
+            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: trendSec };
         }
         return { cls: 'storm-nearby', status: 'Distant lightning', secondary: '' };
     }
@@ -796,12 +803,11 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Rain with no lightning
     if (isWet) {
-        const sec = staleNote || (hasTrend ? trend.summary : '');
-        return { cls: 'storm-rain', status: 'Rain nearby', secondary: sec };
+        return { cls: 'storm-rain', status: 'Rain nearby', secondary: staleNote || trendSec };
     }
     // Trend predicts rain soon but not wet yet
     if (hasTrend) {
-        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trend.summary };
+        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trendSec };
     }
     return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
 }

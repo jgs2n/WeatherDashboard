@@ -232,12 +232,14 @@ class CityWorker(threading.Thread):
                             else rain_timing.get('beginInMin'))
         # RainViewer nowcast cross-check (config flag rainviewer_enabled)
         rv_minutes = None
+        rv_intensity = None
         if self.config.get('rainviewer_enabled', True):
             try:
                 rv_samples = self.sampler.sample_rainviewer_nowcast(self.rv_limiter)
                 rv_timing = derive_rv_timing(rv_samples, is_raining)
                 rv_minutes = (rv_timing.get('endInMin') if is_raining
                               else rv_timing.get('beginInMin'))
+                rv_intensity = rv_timing.get('intensityDbz')
             except Exception:
                 logger.exception('RainViewer nowcast failed for %s', self.city['name'])
         precip_trend = nc.compute_precip_trend(
@@ -249,6 +251,7 @@ class CityWorker(threading.Thread):
             fallback_minutes=fallback_minutes,
             pred_memory=self.pred_memory,
             rv_minutes=rv_minutes,
+            rv_intensity_dbz=rv_intensity,
         )
 
         glm_state = (self.glm.summarize(self.city['lat'], self.city['lon'])

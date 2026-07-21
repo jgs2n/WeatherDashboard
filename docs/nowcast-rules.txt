@@ -310,6 +310,19 @@ The lightning state modifies the displayed condition through a strict priority l
             (±5-min range around the estimate)
     Low:    "Showers possible soon" / "Rain now, clearing later" (vague only)
 
+  Intensity prefix (start predictions only, v1.52.0):
+    The leading word reflects the median dBZ of the first ~16 km of echo
+    behind the incoming edge (EDGE_INTENSITY_DEPTH_KM):
+      < 28 dBZ → "Light rain …";  28–39 → "Rain …";  ≥ 40 → "Heavy rain …"
+    ONLY methods that observed real echo (edge / consensus / rv) may claim
+    intensity; slope projections always say plain "Rain". Wet-case (ending)
+    wording never carries intensity — the condition label already does.
+
+  Confidence dot meter (UI layer only, v1.52.0):
+    The blue storm lane appends ●●● (high) / ●●○ (med) / ●○○ (low) to the
+    trend text. This is applied in renderDashboard, not in the summary string
+    itself — collector records and wording checks see the clean text.
+
   Special cases:
     Intermittent (3+ dry→wet transitions, slope path only):
       → "Intermittent rain next hour" (low confidence)

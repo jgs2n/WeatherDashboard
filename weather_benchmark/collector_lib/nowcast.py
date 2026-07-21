@@ -522,6 +522,18 @@ def slope_signal(timeline: Optional[List[Dict]], is_raining: bool) -> Optional[D
             'horizon': False}
 
 
+def intensity_word(dbz: Optional[int]) -> str:
+    """PURE — intensity prefix from observed edge dBZ. Parity with
+    _intensityWord (JS). Null → plain 'Rain' (pre-intensity wording)."""
+    if dbz is None:
+        return 'Rain'
+    if dbz >= 40:
+        return 'Heavy rain'
+    if dbz < 28:
+        return 'Light rain'
+    return 'Rain'
+
+
 def derive_dry_timing(edge: Optional[Dict], slope: Optional[Dict],
                       motion: Optional[Dict]) -> Dict:
     """PURE — fuse edge + slope for the dry case. Model-wind fallback motion
@@ -530,14 +542,19 @@ def derive_dry_timing(edge: Optional[Dict], slope: Optional[Dict],
     if edge and edge.get('beginInMin') is not None:
         slope_agrees = slope is not None
         fast_enough = bool(motion and motion.get('speed_kmh', 0) >= 10)
+        intensity = edge.get('intensityDbz')
         if edge['lateralHits'] >= 2 and fast_enough and slope_agrees and observed_motion:
-            return {'minutes': edge['beginInMin'], 'confidence': 'high', 'method': 'edge'}
+            return {'minutes': edge['beginInMin'], 'confidence': 'high', 'method': 'edge',
+                    'intensityDbz': intensity}
         if edge['lateralHits'] >= 2:
-            return {'minutes': edge['beginInMin'], 'confidence': 'med', 'method': 'edge'}
-        return {'minutes': edge['beginInMin'], 'confidence': 'low', 'method': 'edge'}
+            return {'minutes': edge['beginInMin'], 'confidence': 'med', 'method': 'edge',
+                    'intensityDbz': intensity}
+        return {'minutes': edge['beginInMin'], 'confidence': 'low', 'method': 'edge',
+                'intensityDbz': intensity}
     if slope is not None:
-        return {'minutes': slope['minutes'], 'confidence': slope['tier'], 'method': 'slope'}
-    return {'minutes': None, 'confidence': 'low', 'method': 'none'}
+        return {'minutes': slope['minutes'], 'confidence': slope['tier'], 'method': 'slope',
+                'intensityDbz': None}
+    return {'minutes': None, 'confidence': 'low', 'method': 'none', 'intensityDbz': None}
 
 
 # RainViewer nowcast consensus — parity with _applyRvConsensus (JS v1.49.0)
@@ -545,7 +562,8 @@ RV_AGREE_MIN = 10     # |edge − rv| ≤ this → consensus boost
 RV_DISAGREE_MIN = 20  # |edge − rv| > this → cap edge at med
 
 
-def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int]) -> Dict:
+def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int],
+                       rv_intensity_dbz: Optional[int] = None) -> Dict:
     """PURE — merge RainViewer's model nowcast with the derived timing.
     edge+RV agree → boost a tier and blend ('consensus'); disagree → keep edge,
     cap at med; method 'none' → RV timing at med ('rv'); slope/edge-horizon →
@@ -557,12 +575,15 @@ def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int]) -> Dict:
         if diff <= RV_AGREE_MIN:
             return {'minutes': round(0.7 * timing['minutes'] + 0.3 * rv_minutes),
                     'confidence': _conf_shift(timing['confidence'], +1),
-                    'method': 'consensus'}
+                    'method': 'consensus',
+                    'intensityDbz': timing.get('intensityDbz')}  # edge's observed echo wins
         if diff > RV_DISAGREE_MIN and timing['confidence'] == 'high':
-            return {'minutes': timing['minutes'], 'confidence': 'med', 'method': 'edge'}
+            return {'minutes': timing['minutes'], 'confidence': 'med', 'method': 'edge',
+                    'intensityDbz': timing.get('intensityDbz')}
         return timing
     if timing['method'] == 'none':
-        return {'minutes': rv_minutes, 'confidence': 'med', 'method': 'rv'}
+        return {'minutes': rv_minutes, 'confidence': 'med', 'method': 'rv',
+                'intensityDbz': rv_intensity_dbz}
     return timing
 
 
@@ -605,7 +626,8 @@ def _format_clock_time_rounded(ms_epoch: float, round_min: int = 5,
 def summarize_trend(timeline: Optional[List[Dict]], is_raining: bool,
                     minutes: Optional[int], confidence: str, method: str,
                     intermittent: bool, now_ms: float,
-                    utc_offset_sec: Optional[int] = None) -> Optional[Dict]:
+                    utc_offset_sec: Optional[int] = None,
+                    intensity_dbz: Optional[int] = None) -> Optional[Dict]:
     """PURE(ish) — confidence-aware human wording. Parity with _summarizeTrend.
     high → clock times; med → ±5 min ranges; low → vague strings only."""
     if method == 'slope' and intermittent:
@@ -624,15 +646,17 @@ def summarize_trend(timeline: Optional[List[Dict]], is_raining: bool,
             return {'text': f'Rain tapering off in ~{lo}–{minutes + 5} min', 'confidence': 'med'}
         return {'text': 'Rain now, clearing later', 'confidence': 'low'}
 
-    # Dry case
+    # Dry case — intensity prefix only from observed echo (edge/consensus/rv);
+    # null intensity renders plain "Rain …", identical to pre-intensity wording.
     if minutes is None:
         return None
+    word = intensity_word(intensity_dbz)
     if confidence == 'high':
         t = _format_clock_time_rounded(now_ms + minutes * 60000, 5, utc_offset_sec)
-        return {'text': f'Rain starting ~{t}', 'confidence': 'high'}
+        return {'text': f'{word} starting ~{t}', 'confidence': 'high'}
     if confidence == 'med':
         lo = max(5, minutes - 5)
-        return {'text': f'Rain likely in ~{lo}–{minutes + 5} min', 'confidence': 'med'}
+        return {'text': f'{word} likely in ~{lo}–{minutes + 5} min', 'confidence': 'med'}
     return {'text': 'Showers possible soon', 'confidence': 'low'}
 
 
@@ -645,7 +669,8 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
                          now_ms: Optional[float] = None,
                          utc_offset_sec: Optional[int] = None,
                          pred_memory: Optional['PredictionMemory'] = None,
-                         rv_minutes: Optional[int] = None) -> Dict:
+                         rv_minutes: Optional[int] = None,
+                         rv_intensity_dbz: Optional[int] = None) -> Dict:
     """Fused precip trend — parity with _computePrecipTrend60m (JS v1.49.0).
 
     edge: result of RadarSampler.sample_edge_timing (or None).
@@ -664,7 +689,7 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
 
     timing = (derive_wet_timing(edge, slope, motion, edge_attempted) if is_raining
               else derive_dry_timing(edge, slope, motion))
-    timing = apply_rv_consensus(timing, rv_minutes)
+    timing = apply_rv_consensus(timing, rv_minutes, rv_intensity_dbz)
     # Consensus built on estimated (model-wind) motion caps at med
     observed_motion = bool(motion) and motion.get('source') != 'model-wind'
     if (timing['method'] == 'consensus' and not observed_motion
@@ -687,7 +712,8 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
     summary = summarize_trend(timeline, is_raining, minutes,
                               confidence, timing['method'],
                               slope['intermittent'] if slope else False,
-                              now_ms, utc_offset_sec)
+                              now_ms, utc_offset_sec,
+                              intensity_dbz=timing.get('intensityDbz'))
     return {
         'timeline':          timeline,
         'summary':           summary['text'] if summary else None,
@@ -697,7 +723,8 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
         'method':            timing['method'],
         'edge': ({'distKm': edge['edgeDistKm'],
                   'speedKmh': edge['closingSpeedKmh'],
-                  'lateralHits': edge['lateralHits']} if edge else None),
+                  'lateralHits': edge['lateralHits'],
+                  'intensityDbz': edge.get('intensityDbz')} if edge else None),
     }
 
 

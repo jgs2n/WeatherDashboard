@@ -16,6 +16,10 @@ const CHANGELOG = [
                 desc: 'A reliability audit found GLM lightning ingest could silently starve for hours: when the satellite data feed publishes files with more than 3 minutes of latency, every file was rejected as "too old" and the app kept showing no lightning while appearing connected. The age window is now 10 minutes with a newest-file fallback, so high-latency periods degrade to slightly delayed data instead of none.'
             },
             {
+                title: 'Smarter Rain Wording',
+                desc: 'Start predictions now say what kind of rain is coming — "Heavy rain starting ~3:45 PM" vs "Light rain likely in ~20–30 min" — using the radar intensity measured at the incoming edge (only when actually observed; projections never claim intensity). A compact dot meter after the text shows prediction confidence at a glance: ●●● high, ●●○ medium, ●○○ low.'
+            },
+            {
                 title: 'Honest "Data Unavailable" Indicator',
                 desc: 'When lightning data goes stale during heavy rain or storm conditions, the storm lane now says "⚠ Lightning data unavailable" instead of silently showing nothing. Absence of a warning should never be mistaken for absence of lightning — if you can hear thunder, you are in range.'
             }

@@ -83,7 +83,7 @@ def _edge(begin=None, end=None, hits=3):
 def test_dry_high_needs_spread_speed_and_slope():
     slope = {'minutes': 25, 'tier': 'med', 'intermittent': False}
     t = nc.derive_dry_timing(_edge(begin=30, hits=3), slope, {'speed_kmh': 40})
-    assert t == {'minutes': 30, 'confidence': 'high', 'method': 'edge'}
+    assert t == {'minutes': 30, 'confidence': 'high', 'method': 'edge', 'intensityDbz': None}
 
 
 def test_dry_med_without_slope_agreement():
@@ -100,12 +100,12 @@ def test_dry_low_with_marginal_spread():
 def test_dry_slope_fallback_without_edge():
     slope = {'minutes': 25, 'tier': 'med', 'intermittent': False}
     t = nc.derive_dry_timing(None, slope, {'speed_kmh': 40})
-    assert t == {'minutes': 25, 'confidence': 'med', 'method': 'slope'}
+    assert t == {'minutes': 25, 'confidence': 'med', 'method': 'slope', 'intensityDbz': None}
 
 
 def test_dry_nothing():
     t = nc.derive_dry_timing(None, None, None)
-    assert t == {'minutes': None, 'confidence': 'low', 'method': 'none'}
+    assert t == {'minutes': None, 'confidence': 'low', 'method': 'none', 'intensityDbz': None}
 
 
 # ── derive_wet_timing ────────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ def test_compute_precip_trend_respects_floors():
                                     now_ms=NOW_MS)
     assert trend['beginInMin'] >= 15
     assert trend['method'] == 'edge'
-    assert trend['edge'] == {'distKm': 20, 'speedKmh': 40, 'lateralHits': 1}
+    assert trend['edge'] == {'distKm': 20, 'speedKmh': 40, 'lateralHits': 1, 'intensityDbz': None}
 
 
 def test_compute_precip_trend_high_end_to_end():
