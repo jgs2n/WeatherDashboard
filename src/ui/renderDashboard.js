@@ -316,7 +316,7 @@ function renderCurrentCard(openMeteo, airQuality, nws, location, locLabel, recen
                     <span class="lane-arrow">▸</span>
                 </div>
                 <div class="hazard-lane lane-blue storm-quiet" id="hazard-blue">
-                    <div class="lane-label">Storms Nearby</div>
+                    <div class="lane-label">Storms Nearby<div class="lane-conf" title="Prediction confidence"></div></div>
                     <div class="lane-body">
                         <div class="lane-status">Quiet</div>
                         <div class="lane-secondary"></div>
@@ -767,9 +767,9 @@ function _deriveBlueLaneState(nowSummary) {
     const trend = nowSummary.precipTrend60m;
     const isWet = ps && ps.phenomenon !== 'dry';
     const hasTrend = trend && trend.summary;
-    // Trend text + confidence dots (staleNote below never gets dots)
-    const trendSec = hasTrend
-        ? `${trend.summary} ${_confDots(trend.summaryConfidence)}`.trim() : '';
+    // Trend text; confidence rendered separately as dots under the lane label
+    const trendSec = hasTrend ? trend.summary : '';
+    const trendConf = hasTrend ? (trend.summaryConfidence || '') : '';
 
     // GLM ingest health (v1.52.0): the GLM buffer receives flashes from the
     // whole satellite disk — 30+ min with nothing ingested means the data
@@ -788,12 +788,12 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Lightning active or nearby (>10mi)
     if (ls && (ls.state === 'active' || ls.state === 'nearby')) {
-        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: trendSec };
+        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: trendSec, conf: trendConf };
     }
     // Lightning approaching
     if (ls && ls.state === 'approaching') {
         if (ls._isApproaching) {
-            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: trendSec };
+            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: trendSec, conf: trendConf };
         }
         return { cls: 'storm-nearby', status: 'Distant lightning', secondary: '' };
     }
@@ -803,11 +803,11 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Rain with no lightning
     if (isWet) {
-        return { cls: 'storm-rain', status: 'Rain nearby', secondary: staleNote || trendSec };
+        return { cls: 'storm-rain', status: 'Rain nearby', secondary: staleNote || trendSec, conf: staleNote ? '' : trendConf };
     }
     // Trend predicts rain soon but not wet yet
     if (hasTrend) {
-        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trendSec };
+        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trendSec, conf: staleNote ? '' : trendConf };
     }
     return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
 }
@@ -821,6 +821,8 @@ function updateBlueLane(nowSummary) {
     lane.querySelector('.lane-status').textContent = state.status;
     const secEl = lane.querySelector('.lane-secondary');
     if (secEl) secEl.textContent = state.secondary;
+    const confEl = lane.querySelector('.lane-conf');
+    if (confEl) confEl.textContent = _confDots(state.conf);
 }
 
 // ─── Hazard lane suppression ─────────────────────────────────────────────────

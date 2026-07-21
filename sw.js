@@ -4,7 +4,7 @@ const CACHE_NAME = 'weather-hq-v1.52.0';
 // file silently misses the cache offline.
 const PRECACHE_URLS = [
     './',
-    'css/styles.css?v=1.21.0',
+    'css/styles.css?v=1.22.0',
     'icons/meteocons/clear-day.svg',
     'icons/meteocons/clear-night.svg',
     'icons/meteocons/partly-cloudy-day.svg',

@@ -17,7 +17,7 @@ const CHANGELOG = [
             },
             {
                 title: 'Smarter Rain Wording',
-                desc: 'Start predictions now say what kind of rain is coming — "Heavy rain starting ~3:45 PM" vs "Light rain likely in ~20–30 min" — using the radar intensity measured at the incoming edge (only when actually observed; projections never claim intensity). A compact dot meter after the text shows prediction confidence at a glance: ●●● high, ●●○ medium, ●○○ low.'
+                desc: 'Start predictions now say what kind of rain is coming — "Heavy rain starting ~3:45 PM" vs "Light rain likely in ~20–30 min" — using the radar intensity measured at the incoming edge (only when actually observed; projections never claim intensity). A compact dot meter under the Storms Nearby label shows prediction confidence at a glance: ●●● high, ●●○ medium, ●○○ low.'
             },
             {
                 title: 'Honest "Data Unavailable" Indicator',

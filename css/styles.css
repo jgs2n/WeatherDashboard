@@ -1448,6 +1448,15 @@ body {
     margin-right: 0.5rem;
 }
 
+/* Prediction-confidence dot meter under the blue lane label (●●● / ●●○ / ●○○) */
+.lane-conf {
+    font-size: 0.5rem;
+    letter-spacing: 0.15em;
+    color: rgba(255, 255, 255, 0.45);
+    margin-top: 0.2rem;
+    min-height: 0.6rem; /* reserve the line so the lane doesn't jump when empty */
+}
+
 .lane-body { flex: 1; min-width: 0; }
 
 .lane-status {
