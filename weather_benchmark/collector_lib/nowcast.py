@@ -557,17 +557,49 @@ def derive_dry_timing(edge: Optional[Dict], slope: Optional[Dict],
     return {'minutes': None, 'confidence': 'low', 'method': 'none', 'intensityDbz': None}
 
 
-# RainViewer nowcast consensus — parity with _applyRvConsensus (JS v1.49.0)
-RV_AGREE_MIN = 10     # |edge − rv| ≤ this → consensus boost
-RV_DISAGREE_MIN = 20  # |edge − rv| > this → cap edge at med
+# Model nowcast consensus (RainViewer / Open-Meteo 15-minutely) — parity with
+# _applyRvConsensus / _deriveOm15Timing (JS v1.53.0)
+RV_AGREE_MIN = 10     # |edge − model| ≤ this → consensus boost
+RV_DISAGREE_MIN = 20  # |edge − model| > this → cap edge at med
+OM15_WET_IN = 0.01    # in/15min — wet threshold for minutely-15 slots
+
+
+def derive_om15_timing(m15: Optional[Dict], is_raining: bool, now_ms: float,
+                       utc_offset_sec: int = 0) -> Dict:
+    """PURE — begin/end timing from Open-Meteo 15-minutely precipitation.
+    Same midpoint-transition logic as derive_rv_timing (±7.5 min quantization).
+    Replaces the RainViewer nowcast source (free future frames discontinued
+    upstream, empty array observed 2026-07-23)."""
+    from datetime import datetime, timezone, timedelta
+    none = {'beginInMin': None, 'endInMin': None}
+    if not m15 or not m15.get('time') or not m15.get('precipitation'):
+        return none
+    prev_minute = 0
+    for i, t in enumerate(m15['time']):
+        try:
+            slot = datetime.fromisoformat(t).replace(tzinfo=timezone.utc) - timedelta(seconds=utc_offset_sec)
+        except ValueError:
+            continue
+        minute_ahead = round((slot.timestamp() * 1000 + 7.5 * 60000 - now_ms) / 60000)
+        if minute_ahead < 0:
+            continue
+        p = m15['precipitation'][i] if i < len(m15['precipitation']) else None
+        wet = p is not None and p >= OM15_WET_IN
+        if not is_raining and wet:
+            return {'beginInMin': max(0, round((prev_minute + minute_ahead) / 2)), 'endInMin': None}
+        if is_raining and not wet:
+            return {'beginInMin': None, 'endInMin': max(0, round((prev_minute + minute_ahead) / 2))}
+        prev_minute = minute_ahead
+    return none
 
 
 def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int],
-                       rv_intensity_dbz: Optional[int] = None) -> Dict:
-    """PURE — merge RainViewer's model nowcast with the derived timing.
-    edge+RV agree → boost a tier and blend ('consensus'); disagree → keep edge,
-    cap at med; method 'none' → RV timing at med ('rv'); slope/edge-horizon →
-    unchanged."""
+                       rv_intensity_dbz: Optional[int] = None,
+                       source_label: str = 'rv') -> Dict:
+    """PURE — merge a model nowcast with the derived timing.
+    edge+model agree → boost a tier and blend ('consensus'); disagree → keep
+    edge, cap at med; method 'none' → model timing at med (method =
+    source_label: 'rv' | 'om15'); slope/edge-horizon → unchanged."""
     if rv_minutes is None:
         return timing
     if timing['method'] == 'edge' and timing['minutes'] is not None:
@@ -582,7 +614,7 @@ def apply_rv_consensus(timing: Dict, rv_minutes: Optional[int],
                     'intensityDbz': timing.get('intensityDbz')}
         return timing
     if timing['method'] == 'none':
-        return {'minutes': rv_minutes, 'confidence': 'med', 'method': 'rv',
+        return {'minutes': rv_minutes, 'confidence': 'med', 'method': source_label,
                 'intensityDbz': rv_intensity_dbz}
     return timing
 
@@ -670,7 +702,8 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
                          utc_offset_sec: Optional[int] = None,
                          pred_memory: Optional['PredictionMemory'] = None,
                          rv_minutes: Optional[int] = None,
-                         rv_intensity_dbz: Optional[int] = None) -> Dict:
+                         rv_intensity_dbz: Optional[int] = None,
+                         om15_minutes: Optional[int] = None) -> Dict:
     """Fused precip trend — parity with _computePrecipTrend60m (JS v1.49.0).
 
     edge: result of RadarSampler.sample_edge_timing (or None).
@@ -689,7 +722,10 @@ def compute_precip_trend(timeline: Optional[List[Dict]],
 
     timing = (derive_wet_timing(edge, slope, motion, edge_attempted) if is_raining
               else derive_dry_timing(edge, slope, motion))
-    timing = apply_rv_consensus(timing, rv_minutes, rv_intensity_dbz)
+    if rv_minutes is not None:
+        timing = apply_rv_consensus(timing, rv_minutes, rv_intensity_dbz, 'rv')
+    elif om15_minutes is not None:
+        timing = apply_rv_consensus(timing, om15_minutes, None, 'om15')
     # Consensus built on estimated (model-wind) motion caps at med
     observed_motion = bool(motion) and motion.get('source') != 'model-wind'
     if (timing['method'] == 'consensus' and not observed_motion

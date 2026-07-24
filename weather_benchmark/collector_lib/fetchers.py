@@ -206,12 +206,18 @@ def fetch_open_meteo(lat: float, lon: float, want_hourly: bool = False) -> Optio
                      'wind_direction_10m,pressure_msl,surface_pressure',
         'temperature_unit': 'fahrenheit',
         'wind_speed_unit':  'mph',
+        # v1.53.0 parity fix: the browser fetches precipitation in INCHES but
+        # the collector was defaulting to mm — om_precip_in_hr thresholds
+        # (0.005/0.01 in) in the dry-veto logic were effectively 25× off.
+        'precipitation_unit': 'inch',
         'timezone':         'UTC',
     }
     if want_hourly:
         params['hourly'] = ('weather_code,temperature_2m,precipitation_probability,'
                             'precipitation,cloud_cover,'
                             'wind_speed_700hPa,wind_direction_700hPa')
+        params['minutely_15'] = 'precipitation'
+        params['forecast_minutely_15'] = 8
         params['forecast_days'] = 1
 
     try:

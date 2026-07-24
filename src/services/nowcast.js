@@ -84,7 +84,9 @@ async function getNowSummary({ lat, lon, country, modelWMO: explicitWMO, locatio
     // Four products (legacy)
     const skyState       = _computeSkyState(obs, country);
     const precipStateNow = _computePrecipNow(obs, radarState, country);
-    const precipTrend60m = await _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion);
+    const precipTrend60m = await _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion,
+        explicitModelCtx ? explicitModelCtx.m15 : null,
+        explicitModelCtx ? explicitModelCtx.utcOffsetSec : null);
     const lightningState = _computeLightningState(lat, lon, obs, radarState, motion);
 
     // Synthesized nowcast state (new architecture)
@@ -406,9 +408,37 @@ function _deriveDryTiming(edge, slope, motion) {
     return { minutes: null, confidence: 'low', method: 'none', intensityDbz: null };
 }
 
-// ── RainViewer nowcast consensus ─────────────────────────────────────────────
-const RV_AGREE_MIN    = 10; // |edge − rv| ≤ this → consensus boost
-const RV_DISAGREE_MIN = 20; // |edge − rv| > this → cap edge at med
+// ── Model nowcast consensus (RainViewer / Open-Meteo 15-minutely) ────────────
+const RV_AGREE_MIN    = 10; // |edge − model| ≤ this → consensus boost
+const RV_DISAGREE_MIN = 20; // |edge − model| > this → cap edge at med
+const OM15_WET_IN     = 0.01; // in/15min — wet threshold for minutely-15 slots
+
+// PURE — begin/end timing from Open-Meteo 15-minutely precipitation.
+// m15: { time: ['YYYY-MM-DDTHH:MM' location-local, 15-min slots], precipitation: [in] }
+// Same midpoint-transition logic as the RainViewer path (±7.5 min quantization).
+// Replaces the RainViewer nowcast consensus source, whose free future frames
+// were discontinued upstream (empty array observed from 2026-07-23).
+function _deriveOm15Timing(m15, isRaining, nowMs, utcOffsetSec) {
+    const NONE = { beginInMin: null, endInMin: null };
+    if (!m15 || !m15.time || !m15.precipitation) return NONE;
+    const offMs = (utcOffsetSec || 0) * 1000;
+    let prevMinute = 0;
+    for (let i = 0; i < m15.time.length; i++) {
+        const slotStartMs = Date.parse(m15.time[i] + 'Z') - offMs;
+        const minuteAhead = Math.round((slotStartMs + 7.5 * 60000 - nowMs) / 60000); // slot midpoint
+        if (minuteAhead < 0) continue;
+        const p = m15.precipitation[i];
+        const wet = p !== null && p !== undefined && p >= OM15_WET_IN;
+        if (!isRaining && wet) {
+            return { beginInMin: Math.max(0, Math.round((prevMinute + minuteAhead) / 2)), endInMin: null };
+        }
+        if (isRaining && !wet) {
+            return { beginInMin: null, endInMin: Math.max(0, Math.round((prevMinute + minuteAhead) / 2)) };
+        }
+        prevMinute = minuteAhead;
+    }
+    return NONE;
+}
 
 // PURE — merge RainViewer's model nowcast with the derived timing.
 //   edge + RV agree      → boost one tier, blend 0.7·edge + 0.3·rv ('consensus')
@@ -417,7 +447,8 @@ const RV_DISAGREE_MIN = 20; // |edge − rv| > this → cap edge at med
 //                          cold-start / no-motion cases, incl. internationally
 //   slope / edge-horizon → unchanged (RV never overrides a live-radar signal
 //                          that already has its own fallback semantics)
-function _applyRvConsensus(timing, rvMinutes, rvIntensityDbz = null) {
+// sourceLabel names the model-only method ('rv' | 'om15') for benchmark slicing.
+function _applyRvConsensus(timing, rvMinutes, rvIntensityDbz = null, sourceLabel = 'rv') {
     if (rvMinutes === null || rvMinutes === undefined) return timing;
     if (timing.method === 'edge' && timing.minutes !== null) {
         const diff = Math.abs(timing.minutes - rvMinutes);
@@ -436,7 +467,7 @@ function _applyRvConsensus(timing, rvMinutes, rvIntensityDbz = null) {
         return timing;
     }
     if (timing.method === 'none') {
-        return { minutes: rvMinutes, confidence: 'med', method: 'rv',
+        return { minutes: rvMinutes, confidence: 'med', method: sourceLabel,
                  intensityDbz: rvIntensityDbz };
     }
     return timing;
@@ -466,7 +497,7 @@ function _deriveWetTiming(edge, slope, motion, edgeAttempted) {
     return { minutes: null, confidence: 'low', method: 'none' };
 }
 
-async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion) {
+async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, motion, m15 = null, m15UtcOffsetSec = null) {
     const timeline = buildPrecipTimeline(currentDbz, isRaining);
 
     // Slope signal (fallback / confirmation). When the timeline is missing
@@ -495,22 +526,34 @@ async function _computePrecipTrend60m(lat, lon, isUS, currentDbz, isRaining, mot
         ? _deriveWetTiming(edge, slope, motion, edgeAttempted)
         : _deriveDryTiming(edge, slope, motion);
 
-    // RainViewer nowcast cross-check (worldwide, works with no motion vector)
+    // Model nowcast cross-check: RainViewer future frames when available
+    // (discontinued upstream 2026-07 — auto-resumes if they return), else
+    // Open-Meteo 15-minutely precipitation. Works with no motion vector.
     try {
+        let modelMinutes = null, modelIntensity = null, modelLabel = 'rv';
         if (typeof sampleRainviewerNowcast === 'function') {
             const rvSamples = await sampleRainviewerNowcast(lat, lon);
             const rvTiming = _deriveRvTiming(rvSamples, isRaining);
-            const rvMinutes = isRaining ? rvTiming.endInMin : rvTiming.beginInMin;
-            timing = _applyRvConsensus(timing, rvMinutes, rvTiming.intensityDbz);
-            // Consensus built on estimated (model-wind) motion caps at med —
-            // two model-derived signals agreeing is not observation-grade.
-            if (timing.method === 'consensus' && motion && motion.source === 'model-wind'
-                && timing.confidence === 'high') {
-                timing = { ...timing, confidence: 'med' };
-            }
+            modelMinutes = isRaining ? rvTiming.endInMin : rvTiming.beginInMin;
+            modelIntensity = rvTiming.intensityDbz;
+        }
+        if (modelMinutes === null && m15) {
+            const omTiming = _deriveOm15Timing(m15, isRaining, Date.now(),
+                m15UtcOffsetSec !== null ? m15UtcOffsetSec
+                    : (typeof cachedUtcOffsetSec !== 'undefined' ? cachedUtcOffsetSec : null));
+            modelMinutes = isRaining ? omTiming.endInMin : omTiming.beginInMin;
+            modelIntensity = null;   // model precip: never claim intensity
+            modelLabel = 'om15';
+        }
+        timing = _applyRvConsensus(timing, modelMinutes, modelIntensity, modelLabel);
+        // Consensus built on estimated (model-wind) motion caps at med —
+        // two model-derived signals agreeing is not observation-grade.
+        if (timing.method === 'consensus' && motion && motion.source === 'model-wind'
+            && timing.confidence === 'high') {
+            timing = { ...timing, confidence: 'med' };
         }
     } catch (err) {
-        console.warn('[Nowcast] RainViewer nowcast failed:', err.message);
+        console.warn('[Nowcast] model nowcast consensus failed:', err.message);
     }
 
     // Self-correction: compare against last poll's prediction (memory expires

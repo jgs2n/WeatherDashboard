@@ -785,6 +785,9 @@ async function fetchWeatherDataDirect(lat, lon, location) {
             pressure:      cur.pressure_msl ?? null,
             steeringSpeedMph:  steering.speedMph,
             steeringDirFromDeg: steering.dirFromDeg,
+            // 15-minutely precip (next 2 h) — model consensus for rain timing
+            m15: openMeteoData?.minutely_15 ?? null,
+            utcOffsetSec: openMeteoData?.utc_offset_seconds ?? null,
         } : null;
         const nowSummary = await getNowSummary({
             lat, lon,

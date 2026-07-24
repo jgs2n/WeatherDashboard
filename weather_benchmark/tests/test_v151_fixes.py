@@ -102,7 +102,7 @@ def test_slope_predictions_never_reach_high_via_memory():
 def test_fallback_motion_conversion():
     m = fallback_motion_from_wind(20.0, 270.0)   # 20 mph from the west
     assert m['source'] == 'model-wind'
-    assert m['speed_kmh'] == 32                  # 20 × 1.609
+    assert m['speed_kmh'] == 24                  # 20 × 1.609 × 0.75 (calibrated)
     assert m['direction_deg'] == 90              # moving east
 
 

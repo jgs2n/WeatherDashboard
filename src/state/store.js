@@ -4,9 +4,19 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.2';
+const APP_VERSION = '0.9.3';
 
 const CHANGELOG = [
+    {
+        version: '0.9.3',
+        date: '2026-07-23',
+        features: [
+            {
+                title: 'Rain Timing Tuned from Live Data',
+                desc: 'Four days of measurement drove three refinements: the steering-wind fallback now uses a calibrated 75% speed factor (raw 700 mb wind overestimates storm motion); small radar cells can now produce measured motion vectors (the accurate kind — 11-minute error vs 22 for estimated motion); and the second-opinion consensus source switched to Open-Meteo 15-minute precipitation data after RainViewer discontinued free forecast frames. Agreement between radar edge-tracking and the model now upgrades prediction confidence.'
+            }
+        ]
+    },
     {
         version: '0.9.2',
         date: '2026-07-19',

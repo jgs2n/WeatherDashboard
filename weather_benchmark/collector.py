@@ -242,6 +242,14 @@ class CityWorker(threading.Thread):
                 rv_intensity = rv_timing.get('intensityDbz')
             except Exception:
                 logger.exception('RainViewer nowcast failed for %s', self.city['name'])
+        # Open-Meteo 15-minutely consensus (fills in while RV nowcast is
+        # discontinued upstream; collector fetches with timezone=UTC → offset 0)
+        om15_minutes = None
+        if rv_minutes is None:
+            m15 = (om_hourly or {}).get('minutely_15') if om_hourly else None
+            om15_t = nc.derive_om15_timing(m15, is_raining, time.time() * 1000, 0)
+            om15_minutes = (om15_t.get('endInMin') if is_raining
+                            else om15_t.get('beginInMin'))
         precip_trend = nc.compute_precip_trend(
             timeline=timeline,
             is_raining=is_raining,
@@ -252,6 +260,7 @@ class CityWorker(threading.Thread):
             pred_memory=self.pred_memory,
             rv_minutes=rv_minutes,
             rv_intensity_dbz=rv_intensity,
+            om15_minutes=om15_minutes,
         )
 
         glm_state = (self.glm.summarize(self.city['lat'], self.city['lon'])

@@ -46,6 +46,7 @@ RADAR_CFG = {
     'MOTION_MIN_OVERLAP': 3,    # min overlap score to accept a shift
     'MOTION_PERSIST_MS': 15 * 60 * 1000,  # reuse last good vector this long
     'MOTION_WIND_MIN_MPH': 8,   # min steering wind for model-wind fallback
+    'MOTION_WIND_SPEED_FACTOR': 0.75,     # storm motion ~ 75% of 700 hPa wind
     'EDGE_STEP_KM': 2,              # upstream march step (~1 px at zoom 6)
     'EDGE_MAX_LOOKAHEAD_MIN': 60,   # don't predict past the hour
     'EDGE_MAX_RANGE_KM': 120,       # march distance cap
@@ -293,10 +294,15 @@ class RadarSampler:
         sum_dx = sum_dy = 0.0
         for p in range(len(grids) - 1):
             prev, curr = grids[p], grids[p + 1]
-            if sum(prev) < 2 or sum(curr) < 2:
+            prev_sum, curr_sum = sum(prev), sum(curr)
+            if prev_sum < 2 or curr_sum < 2:
                 continue
             shift = _best_shift(prev, curr, grid_size, max_shift)
-            if shift['score'] < RADAR_CFG['MOTION_MIN_OVERLAP']:
+            # Adaptive gate (parity with JS v1.53.0): small cells require
+            # full-mask overlap instead of the fixed minimum of 3.
+            min_overlap = min(RADAR_CFG['MOTION_MIN_OVERLAP'],
+                              max(2, min(prev_sum, curr_sum)))
+            if shift['score'] < min_overlap:
                 continue
             r_dx, r_dy = _refine_subcell(shift, max_shift)
             interval_min = (recent[p + 1]['timestamp'] - recent[p]['timestamp']) / 60
@@ -684,8 +690,10 @@ def fallback_motion_from_wind(speed_mph: Optional[float],
         return None
     if speed_mph < RADAR_CFG['MOTION_WIND_MIN_MPH']:
         return None
+    # 0.75: storm motion runs below the 700 hPa wind (see JS comment; paired
+    # July-2026 measurements showed even lower ratios in weak-flow regimes).
     return {
-        'speed_kmh': round(speed_mph * 1.609),
+        'speed_kmh': round(speed_mph * 1.609 * RADAR_CFG['MOTION_WIND_SPEED_FACTOR']),
         'direction_deg': round((dir_from_deg + 180) % 360),
         'dx': None, 'dy': None,
         'source': 'model-wind',

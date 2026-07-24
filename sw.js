@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.52.0';
+const CACHE_NAME = 'weather-hq-v1.53.0';
 // NOTE: entries with ?v= must match index.html exactly — the fetch handler
 // matches full URLs including the query string, so a stale ?v here means the
 // file silently misses the cache offline.
@@ -25,7 +25,7 @@ const PRECACHE_URLS = [
     'icons/meteocons/not-available.svg',
     'pwa/manifest.json',
     'pwa/icon.svg',
-    'src/state/store.js?v=1.17.0',
+    'src/state/store.js?v=1.18.0',
     'src/utils/weatherCodes.js?v=1.0.0',
     'src/utils/risk.js?v=1.2.7',
     'src/utils/dailyIcon.js?v=1.1.0',
@@ -36,17 +36,17 @@ const PRECACHE_URLS = [
     'src/utils/chartHelpers.js?v=1.0.0',
     'src/utils/geo.js?v=1.0.0',
     'src/services/geocode.js?v=1.9.3',
-    'src/services/openMeteo.js?v=1.2.0',
+    'src/services/openMeteo.js?v=1.3.0',
     'src/services/modelComparison.js?v=1.0.0',
     'src/services/nws.js?v=1.0.0',
     'src/services/spc.js?v=1.0.0',
     'src/services/recentPrecip.js?v=1.8.1',
     'src/services/climatology.js?v=1.0.0',
     'src/services/observations.js?v=1.8.1',
-    'src/services/radarSampler.js?v=1.3.0',
+    'src/services/radarSampler.js?v=1.4.0',
     'lib/jsfive.esm.js',
     'src/services/lightning.js?v=1.1.0',
-    'src/services/nowcast.js?v=1.3.0',
+    'src/services/nowcast.js?v=1.4.0',
     'src/services/nowcastDisplay.js?v=1.0.0',
     'src/services/geolocation.js?v=1.0.0',
     'src/ui/locationPicker.js?v=1.9.3',
@@ -59,7 +59,7 @@ const PRECACHE_URLS = [
     'src/ui/share.js?v=1.0.0',
     'src/ui/renderDashboard.js?v=1.15.0',
     'src/ui/tabDrag.js?v=1.1.7',
-    'src/main.js?v=1.16.0',
+    'src/main.js?v=1.17.0',
     'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap'
 ];
 

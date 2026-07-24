@@ -169,6 +169,7 @@ async function fetchForecast(lat, lon) {
         `&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,cloud_cover,uv_index,dew_point_2m,is_day` +
         `&hourly=temperature_2m,relative_humidity_2m,dew_point_2m,apparent_temperature,precipitation_probability,precipitation,snowfall,snow_depth,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,uv_index,pressure_msl,is_day,wind_speed_700hPa,wind_direction_700hPa` +
         `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,sunrise,sunset,snowfall_sum,uv_index_max` +
+        `&minutely_15=precipitation&forecast_minutely_15=8` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto&past_days=7&forecast_days=7`;
     const data = await _omFetch(url);
     if (data.error) throw new Error(data.reason || 'Open-Meteo API error');
