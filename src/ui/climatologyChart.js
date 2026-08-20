@@ -25,7 +25,7 @@ function _ccRender() {
 
     const yearsSpan = climo.baselineYears && climo.baselineYears.length
         ? `${climo.baselineYears[0]}–${climo.baselineYears[climo.baselineYears.length - 1]}`
-        : '10-yr';
+        : '30-yr';
     const minYears = Math.min(...climo.windows.map(w => w.yearsUsed || 0));
     const snow12 = climo.windows.find(w => w.days === 365);
     const snowStr = (snow12 && snow12.snowActualIn > 0) ? `${snow12.snowActualIn.toFixed(1)}"` : null;
@@ -121,7 +121,7 @@ function _ccSVG(windows) {
         `<rect x="${W - padR - 150}" y="8" width="10" height="10" fill="#00d4ff" rx="2"/>` +
         `<text x="${W - padR - 136}" y="17" font-size="9" fill="rgba(255,255,255,0.7)">Actual</text>` +
         `<rect x="${W - padR - 92}" y="8" width="10" height="10" fill="rgba(255,255,255,0.10)" stroke="rgba(255,255,255,0.5)" stroke-dasharray="3,2" rx="2"/>` +
-        `<text x="${W - padR - 78}" y="17" font-size="9" fill="rgba(255,255,255,0.7)">Expected (10-yr avg)</text>`;
+        `<text x="${W - padR - 78}" y="17" font-size="9" fill="rgba(255,255,255,0.7)">Expected (30-yr avg)</text>`;
 
     return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
         ${yLines}

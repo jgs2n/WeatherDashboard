@@ -4,9 +4,19 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.3';
+const APP_VERSION = '0.9.4';
 
 const CHANGELOG = [
+    {
+        version: '0.9.4',
+        date: '2026-08-20',
+        features: [
+            {
+                title: 'Precip vs Normal: 30-Year Baseline',
+                desc: 'The "expected" precipitation baseline extended from a 10-year to a 30-year average — the same convention NOAA climate normals use — roughly halving the sampling noise in the comparison. A validation audit against the Asheville airport rain gauge confirmed the departure percentages are the trustworthy part of this tile: the ERA5 grid data runs about a third below valley gauge readings in mountainous terrain (a stable bias that cancels out of the percentages, but means absolute inch values read low vs a local gauge).'
+            }
+        ]
+    },
     {
         version: '0.9.3',
         date: '2026-07-23',

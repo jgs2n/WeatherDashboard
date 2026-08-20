@@ -16,13 +16,17 @@ const CLIMO_CFG = {
         { days: 182, label: '6M'  },
         { days: 365, label: '12M' },
     ],
-    BASELINE_YEARS:    10,
-    MIN_BASELINE_YEARS: 6,     // require ≥ this many usable years for "expected"
+    // 30-year baseline (v0.9.4, was 10): matches the NOAA-normals convention
+    // and roughly halves the ±10-15% sampling noise a 10-year precip mean
+    // carries. One archive call still fetches the whole range (verified:
+    // 31 years = 11,323 daily values, no gaps).
+    BASELINE_YEARS:    30,
+    MIN_BASELINE_YEARS: 20,    // require ≥ this many usable years for "expected"
     MAX_MISSING_FRAC:  0.20,   // > this fraction of days missing → window is null
     MIN_EXPECTED_IN:   0.05,   // expected below this → suppress % departure (deserts)
     ACTUALS_TTL_MS:    12 * 60 * 60 * 1000,       // refetch actuals every 12 h
     BASELINE_TTL_MS:   30 * 24 * 60 * 60 * 1000,  // refetch baseline every 30 d
-    STORAGE_KEY:       'climoCacheV1',
+    STORAGE_KEY:       'climoCacheV2',  // v2: invalidates cached 10-yr entries
     MAX_CACHED_LOCATIONS: 8,
 };
 

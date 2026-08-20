@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-hq-v1.53.0';
+const CACHE_NAME = 'weather-hq-v1.54.0';
 // NOTE: entries with ?v= must match index.html exactly — the fetch handler
 // matches full URLs including the query string, so a stale ?v here means the
 // file silently misses the cache offline.
@@ -25,14 +25,14 @@ const PRECACHE_URLS = [
     'icons/meteocons/not-available.svg',
     'pwa/manifest.json',
     'pwa/icon.svg',
-    'src/state/store.js?v=1.18.0',
+    'src/state/store.js?v=1.19.0',
     'src/utils/weatherCodes.js?v=1.0.0',
     'src/utils/risk.js?v=1.2.7',
     'src/utils/dailyIcon.js?v=1.1.0',
     'src/utils/dom.js?v=0.6.1',
     'src/utils/moon.js?v=1.0.0',
     'src/utils/metarParse.js?v=1.0.0',
-    'src/utils/format.js?v=0.10.0',
+    'src/utils/format.js?v=0.11.0',
     'src/utils/chartHelpers.js?v=1.0.0',
     'src/utils/geo.js?v=1.0.0',
     'src/services/geocode.js?v=1.9.3',
@@ -41,7 +41,7 @@ const PRECACHE_URLS = [
     'src/services/nws.js?v=1.0.0',
     'src/services/spc.js?v=1.0.0',
     'src/services/recentPrecip.js?v=1.8.1',
-    'src/services/climatology.js?v=1.0.0',
+    'src/services/climatology.js?v=1.1.0',
     'src/services/observations.js?v=1.8.1',
     'src/services/radarSampler.js?v=1.4.0',
     'lib/jsfive.esm.js',
@@ -53,7 +53,7 @@ const PRECACHE_URLS = [
     'src/ui/pressureChart.js?v=1.0.0',
     'src/ui/aqiChart.js?v=1.0.5',
     'src/ui/precipChart.js?v=1.0.0',
-    'src/ui/climatologyChart.js?v=1.0.0',
+    'src/ui/climatologyChart.js?v=1.1.0',
     'src/ui/forecastModal.js?v=1.1.0',
     'src/ui/hourly.js?v=1.0.0',
     'src/ui/share.js?v=1.0.0',

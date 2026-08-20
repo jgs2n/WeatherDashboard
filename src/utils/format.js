@@ -261,8 +261,8 @@ function renderClimoTile(climo) {
             </div>`).join('');
 
     return `
-    <div class="climo-tile" onclick="openClimoChart()" title="Tap for chart — actual vs 10-yr normal (ERA5)">
-        <div class="climo-header">Precip vs Normal <span class="climo-note">10-yr · ERA5</span></div>
+    <div class="climo-tile" onclick="openClimoChart()" title="Tap for chart — actual vs 30-yr normal (ERA5)">
+        <div class="climo-header">Precip vs Normal <span class="climo-note">30-yr · ERA5</span></div>
         <div class="climo-cols">${cols}</div>
     </div>`;
 }
