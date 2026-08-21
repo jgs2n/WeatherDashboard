@@ -781,21 +781,38 @@ function _deriveBlueLaneState(nowSummary) {
     const convective = ps && (ps.phenomenon === 'heavy rain' || ps.phenomenon === 'thunderstorm');
     const staleNote = (glmStale && convective && (!ls || ls.state === 'none'))
         ? '⚠ Lightning data unavailable' : null;
+    // Warm-up (v0.9.5): the app just opened and the flash buffer doesn't yet
+    // cover the band windows — quiet must not read as verified-quiet.
+    const warmNote = (!staleNote && ls && ls.warmingUp && ls.state === 'none')
+        ? '⚡ Building lightning picture…' : null;
+    // Flash evidence for lightning states: "⚡ 6 flashes ↑"
+    let flashNote = '';
+    if (ls && ls.state !== 'none' && ls.flashCounts) {
+        const n = ls.state === 'active' ? ls.flashCounts.within10mi
+            : ls.state === 'nearby' ? ls.flashCounts.within20mi
+            : ls.flashCounts.within40mi;
+        if (n > 0) {
+            const arrow = ls.trend === 'rising' ? ' ↑' : ls.trend === 'falling' ? ' ↓' : '';
+            flashNote = `⚡ ${n} flash${n === 1 ? '' : 'es'}${arrow}`;
+        }
+    }
 
     // Lightning active within 10mi (GLM: broader threshold than point-strike)
     if (ls && ls.state === 'active' && ls.nearestFlashMi != null && ls.nearestFlashMi <= 10) {
-        return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: '' };
+        return { cls: 'storm-lightning', status: 'Lightning nearby', secondary: flashNote };
     }
     // Lightning active or nearby (>10mi)
     if (ls && (ls.state === 'active' || ls.state === 'nearby')) {
-        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: trendSec, conf: trendConf };
+        const sec = [flashNote, trendSec].filter(Boolean).join(' · ');
+        return { cls: 'storm-nearby', status: 'Storm nearby', secondary: sec, conf: trendSec ? trendConf : '' };
     }
     // Lightning approaching
     if (ls && ls.state === 'approaching') {
         if (ls._isApproaching) {
-            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: trendSec, conf: trendConf };
+            const sec = [flashNote, trendSec].filter(Boolean).join(' · ');
+            return { cls: 'storm-approaching', status: 'Storm approaching', secondary: sec, conf: trendSec ? trendConf : '' };
         }
-        return { cls: 'storm-nearby', status: 'Distant lightning', secondary: '' };
+        return { cls: 'storm-nearby', status: 'Distant lightning', secondary: flashNote };
     }
     // METAR fallback thunderstorm
     if (ls && ls.source === 'metar-fallback') {
@@ -803,13 +820,13 @@ function _deriveBlueLaneState(nowSummary) {
     }
     // Rain with no lightning
     if (isWet) {
-        return { cls: 'storm-rain', status: 'Rain nearby', secondary: staleNote || trendSec, conf: staleNote ? '' : trendConf };
+        return { cls: 'storm-rain', status: 'Rain nearby', secondary: staleNote || warmNote || trendSec, conf: (staleNote || warmNote) ? '' : trendConf };
     }
     // Trend predicts rain soon but not wet yet
     if (hasTrend) {
-        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || trendSec, conf: staleNote ? '' : trendConf };
+        return { cls: 'storm-rain', status: 'Rain expected', secondary: staleNote || warmNote || trendSec, conf: (staleNote || warmNote) ? '' : trendConf };
     }
-    return { cls: 'storm-quiet', status: 'Quiet', secondary: '' };
+    return { cls: 'storm-quiet', status: 'Quiet', secondary: warmNote || '' };
 }
 
 function updateBlueLane(nowSummary) {

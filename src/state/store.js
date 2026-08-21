@@ -4,9 +4,27 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.4';
+const APP_VERSION = '0.9.5';
 
 const CHANGELOG = [
+    {
+        version: '0.9.5',
+        date: '2026-08-20',
+        features: [
+            {
+                title: 'Lightning: No More Blind Start',
+                desc: 'A month of independent ground-truth verification (1M+ community-network strike positions) showed the lightning detector is accurate — 95% of close-strike periods carried a warning, distance readings within a mile of truth — but the app opened nearly blind: the first data fetch covered only ~100 seconds of flash history while warnings are computed over 10–20 minute windows. Opening the app mid-storm understated the danger for several minutes. The first fetch now backfills ~10 minutes of lightning data (size-capped for cellular), and until the picture is complete the storm lane says "⚡ Building lightning picture…" instead of showing a false quiet.'
+            },
+            {
+                title: 'Earlier Distant-Storm Warnings',
+                desc: 'The outer "approaching" ring (40 miles) now looks back 30 minutes instead of 20. Ground-truth data showed the shorter window missed a fifth of distant activity at essentially zero false-alarm cost.'
+            },
+            {
+                title: 'Flash Evidence On Screen',
+                desc: 'Lightning warnings now show their evidence: "⚡ 6 flashes ↑" — how many flashes in the relevant ring and whether activity is rising or falling — so you can judge intensity at a glance instead of trusting a bare label.'
+            }
+        ]
+    },
     {
         version: '0.9.4',
         date: '2026-08-20',

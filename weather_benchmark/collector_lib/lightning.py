@@ -90,10 +90,13 @@ def metar_age_minutes(timestamp_iso: Optional[str]) -> float:
 
 # ── Configuration (mirrors LIGHTNING_CFG in lightning.js) ─────────────────────
 
-BUFFER_MAX_AGE_MS = 20 * 60 * 1000      # 20-min rolling window
+BUFFER_MAX_AGE_MS = 30 * 60 * 1000      # 30-min rolling window (v0.9.5, was 20)
 BAND_10MI_WINDOW = 10 * 60 * 1000       # within 10 mi in last 10 min
 BAND_20MI_WINDOW = 15 * 60 * 1000       # within 20 mi in last 15 min
-BAND_40MI_WINDOW = 20 * 60 * 1000       # within 40 mi in last 20 min
+# v0.9.5: 20 -> 30 min. Truth verification (Blitzortung join, 2026-08-20)
+# showed the outer ring missed 21% of distant activity at near-zero
+# false-alarm cost.
+BAND_40MI_WINDOW = 30 * 60 * 1000       # within 40 mi in last 30 min
 
 MILES_PER_DEG_LAT = 69.0
 
@@ -106,6 +109,7 @@ S3_BUCKET_EAST = 'https://noaa-goes19.s3.amazonaws.com'   # GOES-East (G19)
 S3_BUCKET_WEST = 'https://noaa-goes18.s3.amazonaws.com'   # GOES-West (G18)
 S3_PRODUCT_PREFIX = 'GLM-L2-LCFA'
 S3_MAX_FILES_PER_POLL = 5               # cap after time-based filtering
+COLD_START_MAX_FILES = 30               # first poll backfills ~10 min of files
 # v1.52.0: raised 3 -> 10 min. GOES S3 publication latency sometimes exceeds
 # 3 min for hours; the old gate then rejected EVERY file and ingest silently
 # starved (measured 23 h outage on 2026-07-16/17 while 'connected' stayed true).
@@ -457,16 +461,22 @@ class GlmFetcher:
         return len(new_flashes)
 
     def _list_recent(self, now_ms: float):
-        """List the current (and, if empty, previous) UTC hour and filter to
-        unseen, recent, size-capped files. Returns (listing_ok, [(key,size)])."""
+        """List the current (and, if needed, previous) UTC hour and filter to
+        unseen, recent, size-capped files. Returns (listing_ok, [(key,size)]).
+        The first poll backfills up to COLD_START_MAX_FILES (~10 min) so the
+        band windows are populated immediately — parity with the app's
+        cold-start backfill (v0.9.5)."""
+        cold_start = self.stats['polls'] <= 1
+        cap = COLD_START_MAX_FILES if cold_start else S3_MAX_FILES_PER_POLL
         now = datetime.now(timezone.utc)
         ok, usable = self._list_and_filter(now, now_ms)
-        if ok and not usable:
+        if ok and (not usable or (cold_start and len(usable) < cap)):
             prev = now - timedelta(hours=1)
-            ok2, usable = self._list_and_filter(prev, now_ms)
+            ok2, prev_usable = self._list_and_filter(prev, now_ms)
             ok = ok and ok2
+            usable = prev_usable + usable
         # Cap at the most recent N files.
-        return ok, usable[-S3_MAX_FILES_PER_POLL:]
+        return ok, usable[-cap:]
 
     def _list_and_filter(self, utc: datetime, now_ms: float):
         url = _build_s3_list_url(self.bucket, utc)

@@ -74,7 +74,7 @@ GLM is a storm-scale flash detector, NOT a precise strike locator. UI language m
 **State classification** (from flash buffer, broader bands than former Blitzortung):
 - `active` — flashes ≤ 10 mi in last 10 min
 - `nearby` — flashes ≤ 20 mi in last 15 min
-- `approaching` — flashes ≤ 40 mi in last 20 min
+- `approaching` — flashes ≤ 40 mi in last 30 min (v0.9.5, was 20)
 - `none` — no flashes within 40 mi
 
 **Condition override ladder** (do not change this without discussion):

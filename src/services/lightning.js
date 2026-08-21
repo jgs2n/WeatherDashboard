@@ -27,10 +27,13 @@ const LIGHTNING_CFG = {
     NOWCOAST_BASE: 'https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/sat_meteo_emulated_imagery_lightningstrikedensity_goes_time/MapServer/0/query',
 
     // ── Buffer / classification ──────────────────────────────────────────────
-    BUFFER_MAX_AGE_MS: 20 * 60 * 1000,   // 20 min rolling window
+    BUFFER_MAX_AGE_MS: 30 * 60 * 1000,   // 30 min rolling window (v0.9.5, was 20)
     BAND_10MI_WINDOW:  10 * 60 * 1000,   // within 10 mi in last 10 min
     BAND_20MI_WINDOW:  15 * 60 * 1000,   // within 20 mi in last 15 min
-    BAND_40MI_WINDOW:  20 * 60 * 1000,   // within 40 mi in last 20 min
+    // v0.9.5: 20 → 30 min. Truth verification (Blitzortung join, 2026-08-20)
+    // showed the outer ring missed 21% of distant activity at near-zero
+    // false-alarm cost — the wider window recovers early heads-up.
+    BAND_40MI_WINDOW:  30 * 60 * 1000,   // within 40 mi in last 30 min
 
     BBOX_PADDING_DEG:  0.6,              // ~40 mi padding for fetch area
     MILES_PER_DEG_LAT: 69.0,             // approximate
@@ -53,6 +56,12 @@ const LIGHTNING_CFG = {
     S3_SAT_SELECT: 'auto',          // 'auto' | 'east' | 'west'
     S3_PRODUCT_PREFIX: 'GLM-L2-LCFA',
     S3_MAX_FILES_PER_POLL: 5,       // cap after time-based filtering
+    // Cold-start backfill (v0.9.5): the first poll used to cap at 5 files
+    // (~100 s of flashes) while the bands assume 10-20 min of history — so
+    // opening the app mid-storm understated warnings for several minutes.
+    // The first poll now backfills up to ~10 min of files within a byte budget.
+    COLD_START_MAX_FILES: 30,           // ≈10 min of GLM files (one every ~20 s)
+    COLD_START_BUDGET_BYTES: 2.5 * 1024 * 1024,  // cellular-friendly cap
     // v1.52.0: raised 3 → 10 min. GOES S3 publication latency sometimes exceeds
     // 3 min for hours at a stretch; the old gate then rejected EVERY file and
     // ingest silently starved (a 23 h outage was measured in the collector on
@@ -96,6 +105,9 @@ let _lxLastFlashAt = null;
 let _lxStopped = true;
 let _lxAbortController = null;  // cancels in-flight fetches on stop/restart
 let _lxSeenFiles = new Map();     // S3 key → seenAt (epoch ms), pruned by 60-min age
+let _lxColdStartPending = false;  // first poll after start → backfill ~10 min of files
+let _lxOldestIngestMs = null;     // oldest ingested file timestamp (warm-up coverage)
+let _lxStartedAtMs = null;        // when polling started (warm-up upper bound)
 let _lxSizeWarnLogged = false;    // log file-size-cap warning only once
 
 // ── Distance helper ──────────────────────────────────────────────────────────
@@ -305,16 +317,36 @@ async function _fetchFromS3(lat, lon, signal) {
     // List current hour
     let usable = await _listAndFilter(bucket, now, nowMs, signal);
 
-    // Fallback: list previous hour if current yielded nothing usable
-    if (usable.length === 0) {
+    // List previous hour too when the current one is empty — or, on cold
+    // start, when it can't supply the full backfill (near hour boundaries).
+    if (usable.length === 0 ||
+        (_lxColdStartPending && usable.length < LIGHTNING_CFG.COLD_START_MAX_FILES)) {
         const prev = new Date(nowMs - 3600000);
-        usable = await _listAndFilter(bucket, prev, nowMs, signal);
+        const prevUsable = await _listAndFilter(bucket, prev, nowMs, signal);
+        usable = prevUsable.concat(usable);
     }
 
-    if (usable.length === 0) return [];
+    if (usable.length === 0) { _lxColdStartPending = false; return []; }
 
-    // Cap at max files per poll
-    usable = usable.slice(-LIGHTNING_CFG.S3_MAX_FILES_PER_POLL);
+    if (_lxColdStartPending) {
+        // Backfill: newest files first until the count or byte budget is hit
+        // (always allowing at least a normal poll's worth of files).
+        const picked = [];
+        let bytes = 0;
+        for (let i = usable.length - 1; i >= 0; i--) {
+            if (picked.length >= LIGHTNING_CFG.COLD_START_MAX_FILES) break;
+            if (bytes + usable[i].size > LIGHTNING_CFG.COLD_START_BUDGET_BYTES &&
+                picked.length >= LIGHTNING_CFG.S3_MAX_FILES_PER_POLL) break;
+            picked.unshift(usable[i]);
+            bytes += usable[i].size;
+        }
+        usable = picked;
+        _lxColdStartPending = false;
+        console.log(`[Lightning] Cold-start backfill: ${usable.length} file(s), ${(bytes / 1024).toFixed(0)} KB`);
+    } else {
+        // Cap at max files per poll
+        usable = usable.slice(-LIGHTNING_CFG.S3_MAX_FILES_PER_POLL);
+    }
 
     // Fetch + parse each file
     const pad = LIGHTNING_CFG.BBOX_PADDING_DEG;
@@ -339,6 +371,11 @@ async function _fetchFromS3(lat, lon, signal) {
                 allFlashes.push(fl);
             }
             _lxSeenFiles.set(key, Date.now());
+            // Track ingest coverage for the warm-up indicator
+            const fts = _extractFileTimestamp(key);
+            if (fts !== null && (_lxOldestIngestMs === null || fts < _lxOldestIngestMs)) {
+                _lxOldestIngestMs = fts;
+            }
         } catch { continue; }
     }
 
@@ -562,8 +599,16 @@ function summarizeLightningBuffer(lat, lon) {
 
     const provider = (_lxLat != null && _isInGlmCoverage(_lxLat, _lxLon)) ? 'glm' : 'none';
 
+    // Warm-up: until ingested files cover ≥8 of the 10-min close band (or
+    // 15 min wall-clock has passed), the counts understate what's really out
+    // there — the UI shows "building lightning picture" instead of quiet.
+    const warmingUp = provider === 'glm' && _lxStartedAtMs !== null &&
+        (now - _lxStartedAtMs) < 15 * 60 * 1000 &&
+        (_lxOldestIngestMs === null || (now - _lxOldestIngestMs) < 8 * 60 * 1000);
+
     return {
         state,
+        warmingUp,
         nearestFlashMi: nearestMi,
         flashCounts: {
             within10mi: within10mi_10m,
@@ -657,6 +702,9 @@ function startLightning(lat, lon, country) {
     _lxFirstRefreshDone = false;
     _lxSeenFiles.clear();
     _lxSizeWarnLogged = false;
+    _lxColdStartPending = true;   // first poll backfills ~10 min of files
+    _lxOldestIngestMs = null;
+    _lxStartedAtMs = Date.now();
 
     if (!_isInGlmCoverage(lat, lon)) {
         console.log('[Lightning] Location outside GLM coverage — METAR fallback only');

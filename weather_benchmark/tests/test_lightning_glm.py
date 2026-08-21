@@ -173,10 +173,10 @@ def test_fetcher_buffer_dedup():
 
 def test_fetcher_buffer_prune_old():
     fx = GlmFetcher({})
-    fx._update_buffer([_flash_north(6.9, 1), _flash_north(6.9, 25)], NOW)
-    # 25-min-old flash is past the 20-min window → pruned on insert.
+    fx._update_buffer([_flash_north(6.9, 1), _flash_north(6.9, 35)], NOW)
+    # 35-min-old flash is past the 30-min window (v0.9.5) → pruned on insert.
     assert len(fx._buffer) == 1
-    assert all(f['timeMs'] >= NOW - 20 * MIN for f in fx._buffer)
+    assert all(f['timeMs'] >= NOW - 30 * MIN for f in fx._buffer)
 
 
 def test_fetcher_rejects_future_flash():
