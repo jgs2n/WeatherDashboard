@@ -4,9 +4,23 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.5';
+const APP_VERSION = '0.9.6';
 
 const CHANGELOG = [
+    {
+        version: '0.9.6',
+        date: '2026-09-06',
+        features: [
+            {
+                title: 'Lightning Picture Fills In Faster',
+                desc: 'Opening the app pulls about ten minutes of lightning history right away, which is enough for the close-range warnings but not for the 40-mile "approaching" ring, which looks back half an hour. The app now keeps fetching in the background after the first screen appears, until it holds the full window. Ground-truth verification on 6 September showed why it mattered: a freshly opened app reproduced only 58% of the distant-storm warnings that a continuously running one showed, while close-range (100%) and nearby (81%) were already sound. Nothing about when a warning appears has changed \u2014 only how much history is available to compute it. Because this costs data, it is capped at 6 MB per hour across app opens and is skipped entirely when your device asks apps to conserve data; the close-range warnings never depend on it.'
+            },
+            {
+                title: 'Lightning History Survives Closing the App',
+                desc: 'The rolling 30-minute flash buffer is now saved on the device, so re-opening within half an hour resumes with the history already gathered instead of starting from nothing. It is only reused when you are still within five miles of where it was collected, and it expires on the same 30-minute schedule as the live buffer.'
+            },
+        ],
+    },
     {
         version: '0.9.5',
         date: '2026-08-20',

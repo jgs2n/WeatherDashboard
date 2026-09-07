@@ -1,6 +1,7 @@
 // Lightning Service — NOAA GOES GLM polling, rolling flash buffer, state summarization
 // Polls NOAA GLM (Geostationary Lightning Mapper) for recent lightning flash data
-// in the Americas (~52N–52S). Accumulates flashes in a rolling 20-minute buffer.
+// in the Americas (~52N–52S). Accumulates flashes in a rolling 30-minute buffer,
+// persisted to localStorage so a re-open inside that window starts warm.
 // On each nowcast poll cycle, summarizeLightningBuffer() classifies the lightning state.
 //
 // GLM provides storm-scale flash detection at ~10 km resolution — this is NOT
@@ -69,6 +70,38 @@ const LIGHTNING_CFG = {
     S3_FILE_MAX_AGE_MS: 10 * 60 * 1000, // only fetch files with embedded ts ≤ 10 min old
     S3_FILE_SIZE_CAP: 2 * 1024 * 1024,  // skip files > 2 MB
 
+    // ── Progressive backfill (v0.9.6) ────────────────────────────────────────
+    // Cold start covers ~10 min, but the 40-mi band spans 30. The Blitzortung
+    // truth join on 2026-09-06 measured the cost: on a fresh open the
+    // 'approaching' tier reproduced only 58% of what a warm buffer shows
+    // (nearby 81%, active 100%). After first paint, keep pulling OLDER files in
+    // the background until the buffer spans BUFFER_MAX_AGE_MS. This changes only
+    // which data is available, never how it is classified — so it carries no
+    // false-alarm cost, unlike the threshold changes tested and rejected the
+    // same day (relaxing the >=2 gate scored 23% precision).
+    BACKFILL_DELAY_MS: 4000,             // let first paint settle first
+    BACKFILL_MAX_FILES: 60,              // ≈20 min more of files
+    BACKFILL_BUDGET_BYTES: 4 * 1024 * 1024,   // cap for ONE backfill run
+    // Browser verification on 2026-09-07 found the per-run cap is not enough:
+    // GLM files run ~185 KB during an active storm, so a run spends its whole
+    // budget and still only reaches back ~7 min. Three opens and ~15 MB were
+    // needed to span the 30-min window. This rolling cap bounds the total
+    // across opens, which is what actually protects a metered connection.
+    BACKFILL_HOURLY_BUDGET_BYTES: 6 * 1024 * 1024,
+    BACKFILL_MIN_RUN_BYTES: 512 * 1024,  // below this, not worth a round trip
+    BACKFILL_SPEND_KEY: 'lightningBackfillSpendV1',
+    // iOS Safari does not implement navigator.connection, so on iPhone the
+    // rolling cap above is the real protection and this key is the manual
+    // override: localStorage.setItem('lightningDataSaver', 'true').
+    DATA_SAVER_KEY: 'lightningDataSaver',
+
+    // ── Buffer persistence (v0.9.6) ──────────────────────────────────────────
+    // The buffer was memory-only, so every open discarded history already paid
+    // for. Re-opening within the 30-min window now starts warm, not blind.
+    PERSIST_KEY: 'lightningBufferV1',
+    PERSIST_MAX_FLASHES: 4000,           // keep the newest N (localStorage cap)
+    PERSIST_MAX_MOVE_MI: 5,              // restore only if still near the saved point
+
     // ── Fetch timeout ────────────────────────────────────────────────────────
     FETCH_TIMEOUT_MS: 15000,
 };
@@ -109,6 +142,8 @@ let _lxColdStartPending = false;  // first poll after start → backfill ~10 min
 let _lxOldestIngestMs = null;     // oldest ingested file timestamp (warm-up coverage)
 let _lxStartedAtMs = null;        // when polling started (warm-up upper bound)
 let _lxSizeWarnLogged = false;    // log file-size-cap warning only once
+let _lxBackfillPending = false;   // run the progressive backfill after first paint
+let _lxBackfillRunning = false;   // one backfill at a time (startLightning can fire twice)
 
 // ── Distance helper ──────────────────────────────────────────────────────────
 // Equirectangular approximation — intentionally NOT consolidated into geo.js.
@@ -348,13 +383,28 @@ async function _fetchFromS3(lat, lon, signal) {
         usable = usable.slice(-LIGHTNING_CFG.S3_MAX_FILES_PER_POLL);
     }
 
-    // Fetch + parse each file
+    const allFlashes = await _fetchAndParseFiles(bucket, usable, lat, lon, signal);
+
+    if (allFlashes.length > 0) {
+        console.log(`[Lightning] S3: ${allFlashes.length} flash(es) from ${usable.length} file(s)`);
+    }
+
+    return allFlashes;
+}
+
+/**
+ * Fetch + parse a list of GLM files, keeping flashes within 45 mi of (lat, lon).
+ * Shared by the normal poll, the cold-start backfill and the progressive
+ * backfill so all three ingest identically.
+ */
+async function _fetchAndParseFiles(bucket, files, lat, lon, signal) {
     const pad = LIGHTNING_CFG.BBOX_PADDING_DEG;
     const bboxS = lat - pad, bboxN = lat + pad;
     const bboxW = lon - pad, bboxE = lon + pad;
     const allFlashes = [];
 
-    for (const { key } of usable) {
+    for (const { key } of files) {
+        if (_lxStopped) break;   // location changed mid-backfill
         try {
             const fileUrl = `${bucket}/${key}`;
             const resp = await fetch(fileUrl, { signal });
@@ -381,11 +431,133 @@ async function _fetchFromS3(lat, lon, signal) {
 
     _pruneSeenFiles();
 
-    if (allFlashes.length > 0) {
-        console.log(`[Lightning] S3: ${allFlashes.length} flash(es) from ${usable.length} file(s)`);
+    return allFlashes;
+}
+
+/** True when the user or the platform says to conserve data. */
+function _isDataConstrained() {
+    try {
+        if (localStorage.getItem(LIGHTNING_CFG.DATA_SAVER_KEY) === 'true') return true;
+    } catch { /* storage unavailable — fall through to the connection check */ }
+    // Not implemented by Safari (so never true on iPhone); useful on Android/desktop.
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!conn) return false;
+    if (conn.saveData) return true;
+    const type = conn.effectiveType || '';
+    return type === 'slow-2g' || type === '2g' || type === '3g';
+}
+
+/** Bytes the backfill has spent in the last hour, across page loads. */
+function _backfillSpentRecently(now) {
+    try {
+        const raw = localStorage.getItem(LIGHTNING_CFG.BACKFILL_SPEND_KEY);
+        if (!raw) return 0;
+        const cutoff = now - 3600000;
+        return JSON.parse(raw)
+            .filter(e => Array.isArray(e) && e[0] >= cutoff)
+            .reduce((sum, e) => sum + e[1], 0);
+    } catch { return 0; }
+}
+
+function _recordBackfillSpend(now, bytes) {
+    try {
+        const raw = localStorage.getItem(LIGHTNING_CFG.BACKFILL_SPEND_KEY);
+        const cutoff = now - 3600000;
+        const kept = raw ? JSON.parse(raw).filter(e => Array.isArray(e) && e[0] >= cutoff) : [];
+        kept.push([now, bytes]);
+        localStorage.setItem(LIGHTNING_CFG.BACKFILL_SPEND_KEY, JSON.stringify(kept));
+    } catch { /* best-effort */ }
+}
+
+/**
+ * Progressive backfill — reach further back than the cold-start window until
+ * the buffer spans BUFFER_MAX_AGE_MS. Runs once, after first paint, in the
+ * background; a partial result still helps, so every early exit is safe.
+ */
+async function _backfillOlderFiles() {
+    if (_lxStopped || _lxLat == null) return;
+    if (!_isInGlmCoverage(_lxLat, _lxLon)) return;
+    // startLightning can fire twice on one load; without this, two runs fetch
+    // the same files concurrently and double the spend (observed 2026-09-07).
+    if (_lxBackfillRunning) return;
+
+    const nowMs = Date.now();
+    const target = nowMs - LIGHTNING_CFG.BUFFER_MAX_AGE_MS;
+    if (_lxOldestIngestMs !== null && _lxOldestIngestMs <= target) return; // already spans it
+
+    // On a constrained connection, skip this entirely. The 10-min cold start
+    // already reproduces the safety-critical 'active' tier 100% of the time;
+    // only the distant advisory ring is given up.
+    if (_isDataConstrained()) {
+        console.log('[Lightning] Backfill skipped — data saver / metered connection');
+        return;
     }
 
-    return allFlashes;
+    // Rolling hourly cap, shared across opens.
+    const remaining = LIGHTNING_CFG.BACKFILL_HOURLY_BUDGET_BYTES
+        - _backfillSpentRecently(nowMs);
+    if (remaining < LIGHTNING_CFG.BACKFILL_MIN_RUN_BYTES) {
+        console.log('[Lightning] Backfill skipped — hourly data budget spent');
+        return;
+    }
+    const runBudget = Math.min(LIGHTNING_CFG.BACKFILL_BUDGET_BYTES, remaining);
+
+    _lxBackfillRunning = true;
+    try {
+        await _runBackfill(nowMs, runBudget);
+    } finally {
+        _lxBackfillRunning = false;
+    }
+}
+
+/** The fetching half of the backfill, once the guards above have allowed it. */
+async function _runBackfill(nowMs, runBudget) {
+    const hdf5 = await _loadJsfive();
+    if (!hdf5 || _lxStopped) return;
+
+    const bucket = _pickSatBucket(_lxLon);
+    const signal = _lxAbortController ? _lxAbortController.signal : undefined;
+    const opts = { maxAgeMs: LIGHTNING_CFG.BUFFER_MAX_AGE_MS, latencyFallback: false };
+
+    const cur = await _listAndFilter(bucket, new Date(nowMs), nowMs, signal, opts);
+    if (_lxStopped) return;
+    const prev = await _listAndFilter(bucket, new Date(nowMs - 3600000), nowMs, signal, opts);
+    if (_lxStopped) return;
+
+    // Only files older than what we already hold — newer ones are the poll's job.
+    let usable = prev.concat(cur);
+    if (_lxOldestIngestMs !== null) {
+        usable = usable.filter(({ key }) => {
+            const ts = _extractFileTimestamp(key);
+            return ts !== null && ts < _lxOldestIngestMs;
+        });
+    }
+    if (usable.length === 0) return;
+
+    // Newest-first within budget, so coverage stays contiguous if we run out.
+    const picked = [];
+    let bytes = 0;
+    for (let i = usable.length - 1; i >= 0; i--) {
+        if (picked.length >= LIGHTNING_CFG.BACKFILL_MAX_FILES) break;
+        if (bytes + usable[i].size > runBudget) break;
+        picked.unshift(usable[i]);
+        bytes += usable[i].size;
+    }
+    if (picked.length === 0) return;
+
+    const flashes = await _fetchAndParseFiles(bucket, picked, _lxLat, _lxLon, signal);
+    _recordBackfillSpend(Date.now(), bytes);
+    if (_lxStopped) return;
+
+    console.log(`[Lightning] Backfill: ${picked.length} older file(s), `
+        + `${(bytes / 1024).toFixed(0)} KB, +${flashes.length} flash(es)`);
+
+    if (flashes.length > 0) {
+        _updateBuffer(flashes, Date.now());
+        _saveBuffer();
+        // The outer band may now clear a threshold it silently missed.
+        _refreshNowcastDisplay();
+    }
 }
 
 /**
@@ -394,7 +566,13 @@ async function _fetchFromS3(lat, lon, signal) {
  * - Not already seen
  * - Size within S3_FILE_SIZE_CAP
  */
-async function _listAndFilter(bucket, utcDate, nowMs, signal) {
+async function _listAndFilter(bucket, utcDate, nowMs, signal, opts = {}) {
+    // maxAgeMs: how far back a file may be stamped (the progressive backfill
+    // reaches further back than a normal poll). latencyFallback: keep the newest
+    // unseen file when everything looks too old — right for live polling, wrong
+    // for backfill, where an empty result just means nothing more to fetch.
+    const maxAgeMs = opts.maxAgeMs ?? LIGHTNING_CFG.S3_FILE_MAX_AGE_MS;
+    const latencyFallback = opts.latencyFallback !== false;
     const url = _buildS3ListUrl(bucket, utcDate);
     let entries;
     try {
@@ -403,7 +581,7 @@ async function _listAndFilter(bucket, utcDate, nowMs, signal) {
         entries = _parseS3Listing(await resp.text());
     } catch { return []; }
 
-    const cutoff = nowMs - LIGHTNING_CFG.S3_FILE_MAX_AGE_MS;
+    const cutoff = nowMs - maxAgeMs;
     const maxSize = LIGHTNING_CFG.S3_FILE_SIZE_CAP;
 
     const unseen = entries.filter(({ key, size }) => {
@@ -421,7 +599,7 @@ async function _listAndFilter(bucket, utcDate, nowMs, signal) {
         const ts = _extractFileTimestamp(key);
         return ts !== null && ts >= cutoff;
     });
-    if (fresh.length > 0) return fresh;
+    if (fresh.length > 0 || !latencyFallback) return fresh;
     // Latency fallback: everything is "too old" (S3 publication lag) — take the
     // newest unseen file anyway so ingest degrades to laggy instead of dead.
     return unseen.slice(-1);
@@ -520,6 +698,81 @@ function _updateBuffer(flashes, now) {
     }
 
     _pruneBuffer(now);
+}
+
+// Persistence: the buffer is the only lightning history the app has, and it used
+// to die with the page. Saving it means a re-open inside the 30-min window keeps
+// the bands populated instead of restarting blind. Browser-only -- the collector
+// runs continuously and has no equivalent gap.
+
+function _saveBuffer() {
+    if (_lxLat == null || typeof localStorage === 'undefined') return;
+    try {
+        // Compact rows (not objects) keep a busy buffer well inside the quota.
+        const flashes = _lxBuffer
+            .slice(-LIGHTNING_CFG.PERSIST_MAX_FLASHES)
+            .map(f => [+f.lat.toFixed(4), +f.lon.toFixed(4), Math.round(f.timeMs),
+                       f.energy == null ? null : +Number(f.energy).toFixed(4)]);
+        localStorage.setItem(LIGHTNING_CFG.PERSIST_KEY, JSON.stringify({
+            lat: _lxLat,
+            lon: _lxLon,
+            savedAt: Date.now(),
+            oldestIngestMs: _lxOldestIngestMs,
+            flashes,
+            seenFiles: Array.from(_lxSeenFiles.entries()),
+        }));
+    } catch { /* private mode or quota -- persistence is best-effort */ }
+}
+
+/** Restore a saved buffer for this location. Returns true if anything was reused. */
+function _restoreBuffer(lat, lon, now) {
+    if (typeof localStorage === 'undefined') return false;
+
+    let saved;
+    try {
+        const raw = localStorage.getItem(LIGHTNING_CFG.PERSIST_KEY);
+        if (!raw) return false;
+        saved = JSON.parse(raw);
+    } catch { return false; }
+
+    if (!saved || !Array.isArray(saved.flashes)) return false;
+    if (typeof saved.lat !== 'number' || typeof saved.lon !== 'number') return false;
+    // A buffer collected somewhere else says nothing about here.
+    if (_flashMiles(lat, lon, saved.lat, saved.lon) > LIGHTNING_CFG.PERSIST_MAX_MOVE_MI) return false;
+
+    const cutoff = now - LIGHTNING_CFG.BUFFER_MAX_AGE_MS;
+    const restored = [];
+    for (const row of saved.flashes) {
+        if (!Array.isArray(row) || row.length < 3) continue;
+        const [flat, flon, timeMs, energy] = row;
+        if (!isFinite(flat) || !isFinite(flon) || !isFinite(timeMs)) continue;
+        if (timeMs < cutoff || timeMs > now + 60000) continue;
+        restored.push({ lat: flat, lon: flon, timeMs, energy: energy ?? null });
+    }
+    if (restored.length === 0) return false;
+
+    _lxBuffer = restored;
+    _lxDedup = new Set(restored.map(f => _flashKey(f.lat, f.lon, f.timeMs)));
+    let newest = restored[0].timeMs;
+    for (const f of restored) if (f.timeMs > newest) newest = f.timeMs;
+    _lxLastFlashAt = new Date(newest).toISOString();
+
+    // Ingest coverage carries over too, so the warm-up note does not reappear
+    // for a buffer that already spans the bands.
+    if (typeof saved.oldestIngestMs === 'number' && saved.oldestIngestMs >= cutoff) {
+        _lxOldestIngestMs = saved.oldestIngestMs;
+    }
+    // Re-seed the seen-file set so the next poll and the backfill skip files
+    // that are already represented in the restored buffer.
+    if (Array.isArray(saved.seenFiles)) {
+        const seenCutoff = now - 60 * 60 * 1000;
+        for (const entry of saved.seenFiles) {
+            if (Array.isArray(entry) && entry.length === 2 && entry[1] >= seenCutoff) {
+                _lxSeenFiles.set(entry[0], entry[1]);
+            }
+        }
+    }
+    return true;
 }
 
 // ── Public: summarize buffer into lightningState ─────────────────────────────
@@ -644,6 +897,24 @@ function _computeLightningPollInterval() {
     return LIGHTNING_CFG.POLL_QUIET_MS;
 }
 
+/**
+ * Recompute and repaint the nowcast because the lightning picture changed.
+ * Used by the first poll with data and by the progressive backfill.
+ */
+function _refreshNowcastDisplay() {
+    if (typeof getNowSummary === 'function' && typeof updateNowcastDisplay === 'function') {
+        getNowSummary({ lat: _lxLat, lon: _lxLon, country: _lxCountry })
+            .then(summary => {
+                if (_lxStopped) return; // location changed — discard
+                // Guard: verify active location still matches this lightning poll
+                if (activeLocation && (activeLocation.lat !== _lxLat || activeLocation.lon !== _lxLon)) return;
+                cachedNowSummary = summary;
+                updateNowcastDisplay(summary);
+            })
+            .catch(() => {}); // non-critical
+    }
+}
+
 async function _lxPoll() {
     if (_lxStopped || _lxLat == null) return;
 
@@ -654,22 +925,22 @@ async function _lxPoll() {
         if (_lxStopped) return; // location changed during fetch — discard stale data
         _lxLastPollOk = true;
         _updateBuffer(flashes, now);
+        _saveBuffer();
 
-        // First successful poll with data: immediately refresh nowcast display
+        // First successful poll with data: repaint immediately.
         if (_lxBuffer.length > 0 && !_lxFirstRefreshDone) {
             _lxFirstRefreshDone = true;
-            if (typeof getNowSummary === 'function' && typeof updateNowcastDisplay === 'function') {
-                getNowSummary({ lat: _lxLat, lon: _lxLon, country: _lxCountry })
-                    .then(summary => {
-                        if (_lxStopped) return; // location changed — discard
-                        // Guard: verify active location still matches this lightning poll
-                        if (activeLocation && (activeLocation.lat !== _lxLat || activeLocation.lon !== _lxLon)) return;
-                        cachedNowSummary = summary;
-                        updateNowcastDisplay(summary);
-                    })
-                    .catch(() => {}); // non-critical
-            }
+            _refreshNowcastDisplay();
         }
+
+        // First poll is in and the UI has had a moment to paint -- now reach
+        // back for the rest of the window the outer band assumes.
+        if (_lxBackfillPending) {
+            _lxBackfillPending = false;
+            setTimeout(() => { _backfillOlderFiles().catch(() => {}); },
+                       LIGHTNING_CFG.BACKFILL_DELAY_MS);
+        }
+
     } catch (err) {
         if (_lxStopped) return;
         _lxLastPollOk = false;
@@ -703,8 +974,15 @@ function startLightning(lat, lon, country) {
     _lxSeenFiles.clear();
     _lxSizeWarnLogged = false;
     _lxColdStartPending = true;   // first poll backfills ~10 min of files
+    _lxBackfillPending = true;    // then the background pass fills the rest
     _lxOldestIngestMs = null;
     _lxStartedAtMs = Date.now();
+
+    // Warm start: reuse the buffer a previous session left behind, when it was
+    // collected near here and has not aged out.
+    if (_restoreBuffer(lat, lon, _lxStartedAtMs)) {
+        console.log(`[Lightning] Restored ${_lxBuffer.length} flash(es) from a previous session`);
+    }
 
     if (!_isInGlmCoverage(lat, lon)) {
         console.log('[Lightning] Location outside GLM coverage — METAR fallback only');
@@ -718,6 +996,7 @@ function startLightning(lat, lon, country) {
 }
 
 function stopLightning() {
+    _saveBuffer();   // keep the window warm for the next open
     _lxStopped = true;
     if (_lxAbortController) { _lxAbortController.abort(); _lxAbortController = null; }
     if (_lxPollTimer) {

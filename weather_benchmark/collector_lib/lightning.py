@@ -110,6 +110,12 @@ S3_BUCKET_WEST = 'https://noaa-goes18.s3.amazonaws.com'   # GOES-West (G18)
 S3_PRODUCT_PREFIX = 'GLM-L2-LCFA'
 S3_MAX_FILES_PER_POLL = 5               # cap after time-based filtering
 COLD_START_MAX_FILES = 30               # first poll backfills ~10 min of files
+# Progressive backfill (v0.9.6): the cold start covers ~10 min but the 40-mi band
+# spans 30, so a restart leaves the outer tier under-filled for half an hour.
+# Mirrors BACKFILL_MAX_FILES / BACKFILL_BUDGET_BYTES in src/services/lightning.js.
+# Matters more now that the supervised task restarts the collector unattended.
+BACKFILL_MAX_FILES = 60                 # ~20 min more of files
+BACKFILL_BUDGET_BYTES = 4 * 1024 * 1024
 # v1.52.0: raised 3 -> 10 min. GOES S3 publication latency sometimes exceeds
 # 3 min for hours; the old gate then rejected EVERY file and ingest silently
 # starved (measured 23 h outage on 2026-07-16/17 while 'connected' stayed true).
@@ -370,8 +376,9 @@ class GlmFetcher:
     """One shared GLM poller for all cities.
 
     A single GOES LCFA file spans the whole satellite disk, so one download per
-    poll serves every city. The fetcher keeps a global rolling 20-min flash
-    buffer; each ``CityWorker`` calls :meth:`summarize` with its own lat/lon.
+    poll serves every city. The fetcher keeps a global rolling flash
+    buffer (30 min since v0.9.5); each ``CityWorker`` calls :meth:`summarize`
+    with its own lat/lon.
     Thread-safe: the poll loop and the worker reads share ``_lock``.
     """
 
@@ -382,6 +389,8 @@ class GlmFetcher:
         self.bucket = S3_BUCKET_WEST if sat == 'west' else S3_BUCKET_EAST
         self.session = session or requests.Session()
         self._last_ingest_ms: Optional[float] = time.time() * 1000.0  # watchdog baseline
+        self._oldest_ingest_ms: Optional[float] = None  # backfill coverage floor
+        self._backfill_pending = True                   # one progressive pass per start
         self._buffer: List[Dict] = []
         self._dedup = set()
         self._seen_files: Dict[str, float] = {}
@@ -436,6 +445,7 @@ class GlmFetcher:
                 self.stats['files'] += 1
                 with self._lock:
                     self._seen_files[key] = now_ms
+                self._note_ingest(key)
             except Exception:
                 continue
         with self._lock:
@@ -443,6 +453,14 @@ class GlmFetcher:
             self._update_buffer(new_flashes, now_ms)
             self._prune_seen(now_ms)
         self.stats['flashes'] += len(new_flashes)
+        if self._backfill_pending and self.stats['polls'] >= 2:
+            # Deferred one poll so the first cycle stays fast, exactly as the
+            # app defers it past first paint.
+            self._backfill_pending = False
+            try:
+                self._backfill_older(now_ms)
+            except Exception:
+                logger.exception('GLM backfill error')
         if new_flashes:
             logger.info('GLM: +%d flash(es) from %d file(s)',
                         len(new_flashes), len(files))
@@ -458,6 +476,61 @@ class GlmFetcher:
                 import requests
                 self.session = requests.Session()
                 self._last_ingest_ms = now_ms  # re-arm so we warn every 30 min, not every poll
+        return len(new_flashes)
+
+    def _note_ingest(self, key: str):
+        """Track the oldest file we have ingested — the backfill's coverage floor
+        and, in the app, the warm-up indicator."""
+        ts = extract_file_timestamp_ms(key)
+        if ts is None:
+            return
+        if self._oldest_ingest_ms is None or ts < self._oldest_ingest_ms:
+            self._oldest_ingest_ms = ts
+
+    def _backfill_older(self, now_ms: float) -> int:
+        """Reach back past the cold-start window until the buffer spans
+        BUFFER_MAX_AGE_MS. Mirrors the app's progressive backfill: after a
+        restart the outer 40-mi band would otherwise stay under-filled for half
+        an hour, which the 2026-09-06 truth join measured as the largest
+        cold-start gap (approaching tier at 58% of a warm buffer)."""
+        target = now_ms - BUFFER_MAX_AGE_MS
+        if self._oldest_ingest_ms is not None and self._oldest_ingest_ms <= target:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        _ok, cur = self._list_and_filter(now, now_ms,
+                                         max_age_ms=BUFFER_MAX_AGE_MS,
+                                         latency_fallback=False)
+        _ok2, prev = self._list_and_filter(now - timedelta(hours=1), now_ms,
+                                           max_age_ms=BUFFER_MAX_AGE_MS,
+                                           latency_fallback=False)
+        files = select_backfill_files(prev + cur, self._oldest_ingest_ms)
+        if not files:
+            return 0
+
+        new_flashes: List[Dict] = []
+        for key, _size in files:
+            if self._stop.is_set():
+                break
+            try:
+                resp = self.session.get(f'{self.bucket}/{key}',
+                                        timeout=FETCH_TIMEOUT_SEC)
+                if resp.status_code != 200:
+                    continue
+                new_flashes.extend(parse_glm_netcdf(resp.content, now_ms))
+                self.stats['files'] += 1
+                with self._lock:
+                    self._seen_files[key] = now_ms
+                self._note_ingest(key)
+            except Exception:
+                continue
+
+        if new_flashes:
+            with self._lock:
+                self._update_buffer(new_flashes, now_ms)
+            self.stats['flashes'] += len(new_flashes)
+            logger.info('GLM backfill: +%d flash(es) from %d older file(s)',
+                        len(new_flashes), len(files))
         return len(new_flashes)
 
     def _list_recent(self, now_ms: float):
@@ -478,7 +551,9 @@ class GlmFetcher:
         # Cap at the most recent N files.
         return ok, usable[-cap:]
 
-    def _list_and_filter(self, utc: datetime, now_ms: float):
+    def _list_and_filter(self, utc: datetime, now_ms: float,
+                         max_age_ms: float = None,
+                         latency_fallback: bool = True):
         url = _build_s3_list_url(self.bucket, utc)
         try:
             resp = self.session.get(url, timeout=FETCH_TIMEOUT_SEC)
@@ -487,7 +562,7 @@ class GlmFetcher:
             entries = _parse_s3_listing(resp.text)
         except Exception:
             return False, []
-        cutoff = now_ms - S3_FILE_MAX_AGE_MS
+        cutoff = now_ms - (S3_FILE_MAX_AGE_MS if max_age_ms is None else max_age_ms)
         unseen = [(k, s) for k, s in entries
                   if k not in self._seen_files and s <= S3_FILE_SIZE_CAP]
         usable = []
@@ -495,9 +570,10 @@ class GlmFetcher:
             ts = extract_file_timestamp_ms(key)
             if ts is not None and ts >= cutoff:
                 usable.append((key, size))
-        if not usable and unseen:
+        if not usable and unseen and latency_fallback:
             # Latency fallback: everything is "too old" (S3 publication lag) —
             # take the newest unseen file so ingest degrades to laggy, not dead.
+            # Wrong for backfill, where empty just means nothing older to fetch.
             usable = unseen[-1:]
         return True, usable
 
@@ -551,6 +627,37 @@ class GlmFetcher:
             buf, lat, lon, now_ms, in_coverage=True,
             last_poll_ok=ok, last_flash_at_ms=last_flash,
         )
+
+
+def select_backfill_files(entries, oldest_ingest_ms, *,
+                          max_files: int = BACKFILL_MAX_FILES,
+                          budget_bytes: int = BACKFILL_BUDGET_BYTES):
+    """Pick files OLDER than what we already hold, newest-first within the count
+    and byte budgets, returned oldest-first so ingest stays chronological.
+
+    Pure function — parity-pinned against the picked/bytes loop in
+    ``_backfillOlderFiles()`` in src/services/lightning.js. ``entries`` is a
+    chronologically sorted list of ``(key, size)``.
+    """
+    if oldest_ingest_ms is not None:
+        older = []
+        for key, size in entries:
+            ts = extract_file_timestamp_ms(key)
+            if ts is not None and ts < oldest_ingest_ms:
+                older.append((key, size))
+        entries = older
+
+    picked = []
+    total = 0
+    for key, size in reversed(entries):
+        if len(picked) >= max_files:
+            break
+        if total + size > budget_bytes:
+            break
+        picked.append((key, size))
+        total += size
+    picked.reverse()
+    return picked
 
 
 def _ms_to_iso(ms: Optional[float]) -> Optional[str]:
