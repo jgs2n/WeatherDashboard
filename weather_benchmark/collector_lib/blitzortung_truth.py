@@ -15,6 +15,13 @@ per Blitzortung's terms; a single passive bbox subscription is well within
 community norms.
 
 Output: data/lightning_truth/YYYY-MM-DD.jsonl — {"t": iso_utc, "lat": .., "lon": ..}
+
+Coverage: data/lightning_truth/coverage/YYYY-MM-DD.jsonl —
+  {"t": iso_utc, "event": "connect"|"heartbeat"|"disconnect", "server": url}
+A heartbeat is written at most every HEARTBEAT_S while the socket is up, so a
+window with no connect/heartbeat line was NOT being recorded (the recorder
+reconnects thousands of times; "no strikes" there means "no data", not "no
+lightning"). lightning_truth_eval.py uses this to drop uncovered polls.
 """
 
 import json
@@ -30,6 +37,8 @@ SERVERS = ['wss://ws1.blitzortung.org/', 'wss://ws7.blitzortung.org/',
            'wss://ws8.blitzortung.org/']
 RECONNECT_BASE_S = 5
 RECONNECT_MAX_S = 300
+HEARTBEAT_S = 60
+COVERAGE_SUBDIR = 'coverage'
 
 
 def _lzw_decode(s: str) -> str:
@@ -81,6 +90,7 @@ class BlitzortungRecorder(threading.Thread):
         self.bbox = bbox          # {'west','east','north','south'}
         self.stop_event = stop_event
         self.stats = {'strikes': 0, 'reconnects': 0, 'errors': 0}
+        self._last_heartbeat = 0.0
         self._delay = RECONNECT_BASE_S
         self._server_i = 0
 
@@ -103,6 +113,24 @@ class BlitzortungRecorder(threading.Thread):
             f.write(line + '\n')
         self.stats['strikes'] += 1
 
+    def _coverage(self, event: str, server: str):
+        """Append a coverage event; never let bookkeeping kill the recorder."""
+        try:
+            d = os.path.join(self.out_dir, COVERAGE_SUBDIR)
+            os.makedirs(d, exist_ok=True)
+            now = datetime.now(timezone.utc)
+            line = json.dumps({'t': now.isoformat(), 'event': event, 'server': server})
+            with open(os.path.join(d, f'{now:%Y-%m-%d}.jsonl'), 'a', encoding='utf-8') as f:
+                f.write(line + '\n')
+        except OSError as e:
+            logger.debug('coverage write failed: %s', e)
+
+    def _maybe_heartbeat(self, server: str):
+        now = time.monotonic()
+        if now - self._last_heartbeat >= HEARTBEAT_S:
+            self._last_heartbeat = now
+            self._coverage('heartbeat', server)
+
     def run(self):
         try:
             import websocket  # websocket-client
@@ -117,6 +145,8 @@ class BlitzortungRecorder(threading.Thread):
                 # LZW-compressed strikes globally; bbox filtering is client-side.
                 ws.send('{"a": 111}')
                 logger.info('Blitzortung truth recorder connected (%s), bbox=%s', url, self.bbox)
+                self._coverage('connect', url)
+                self._last_heartbeat = time.monotonic()
                 self._delay = RECONNECT_BASE_S
                 ws.settimeout(60)
                 while not self.stop_event.is_set():
@@ -127,6 +157,8 @@ class BlitzortungRecorder(threading.Thread):
                     strike = _parse_strike(msg)
                     if strike:
                         self._record(*strike)
+                    self._maybe_heartbeat(url)
+                self._coverage('disconnect', url)
                 try:
                     ws.close()
                 except Exception:

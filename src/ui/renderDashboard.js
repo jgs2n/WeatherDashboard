@@ -406,7 +406,7 @@ function renderForecastGrid(daily, derivedIcons, derivedNightIcons, nws, modelCo
 
     forecastDays = [];
     // Skip any past days Open-Meteo returns due to past_days=2 in the API call
-    const _now = new Date();
+    const _now = omLocalNow();
     const _todayStr = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
     const startIdx = Math.max(0, daily.time.findIndex(d => d >= _todayStr));
     const hasAnySnow = daily.snowfall_sum
@@ -553,7 +553,7 @@ function renderHourlyStrip(hourly, current, locLabel) {
 
     if (!hourly || !hourly.time) return '';
 
-    const now = new Date();
+    const now = omLocalNow();
     const currentHourIndex = hourly.time.findIndex(t => new Date(t) >= now);
     const startIndex = Math.max(0, currentHourIndex);
     cachedNowIndex = startIndex;
@@ -667,17 +667,19 @@ function updateRedLane(nws) {
     const lane = document.getElementById('hazard-red');
     if (!lane) return;
 
-    // Parse alerts
-    if (nws && nws.alerts && nws.alerts.features && nws.alerts.features.length > 0) {
+    // Parse alerts, dropping any whose end/expiry has passed (the feed and our
+    // refresh can lag; an expired warning must not keep the lane red).
+    cachedAlerts = { active: [], upcoming: [] };
+    if (nws && nws.alerts && nws.alerts.features) {
         const now = new Date();
-        cachedAlerts = { active: [], upcoming: [] };
         nws.alerts.features.forEach(a => {
-            const onset = new Date(a.properties.onset);
-            if (onset <= now) cachedAlerts.active.push(a);
+            const p = a.properties || {};
+            const end = p.ends || p.expires;
+            if (end && new Date(end) <= now) return;
+            const onset = new Date(p.onset || p.effective);
+            if (!(onset > now)) cachedAlerts.active.push(a);
             else cachedAlerts.upcoming.push(a);
         });
-    } else {
-        cachedAlerts = { active: [], upcoming: [] };
     }
 
     const allAlerts = [...cachedAlerts.active, ...cachedAlerts.upcoming];
@@ -686,7 +688,10 @@ function updateRedLane(nws) {
 
     if (allAlerts.length === 0) {
         lane.classList.add('alert-none');
-        lane.querySelector('.lane-status').textContent = 'None';
+        // NWS answered (US) but the alerts request failed: say so — "None"
+        // would claim there are no warnings. nws === null means non-US/no NWS.
+        const unavailable = nws && nws.alerts === null;
+        lane.querySelector('.lane-status').textContent = unavailable ? 'Alerts unavailable' : 'None';
         return;
     }
 
@@ -771,13 +776,12 @@ function _deriveBlueLaneState(nowSummary) {
     const trendSec = hasTrend ? trend.summary : '';
     const trendConf = hasTrend ? (trend.summaryConfidence || '') : '';
 
-    // GLM ingest health (v1.52.0): the GLM buffer receives flashes from the
-    // whole satellite disk — 30+ min with nothing ingested means the data
-    // feed is stale, not that the Americas went quiet. During convective
-    // conditions, absence of a warning must not read as absence of lightning.
-    const GLM_STALE_MS = 30 * 60 * 1000;
-    const glmStale = !ls || ls.source === 'unavailable' || ls.connected === false ||
-        (ls.bufferAgeMs != null && ls.bufferAgeMs > GLM_STALE_MS);
+    // GLM ingest health: `connected` is true only while S3 listings keep
+    // succeeding. During convective conditions, a dead feed must not read as
+    // absence of lightning. Last-flash age is NOT a health signal — the buffer
+    // only holds flashes within ~45 mi, so it ages out normally after a storm
+    // passes (that produced a false "unavailable" in post-storm heavy rain).
+    const glmStale = !ls || ls.source === 'unavailable' || ls.connected === false;
     const convective = ps && (ps.phenomenon === 'heavy rain' || ps.phenomenon === 'thunderstorm');
     const staleNote = (glmStale && convective && (!ls || ls.state === 'none'))
         ? '⚠ Lightning data unavailable' : null;
@@ -880,7 +884,7 @@ function updateNWSForecasts(nws, daily) {
     const forecastItems = document.querySelectorAll('.forecast-item');
     if (!forecastItems.length) return;
 
-    const _now = new Date();
+    const _now = omLocalNow();
     const _todayStr = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
     const startIdx = Math.max(0, daily.time.findIndex(d => d >= _todayStr));
 

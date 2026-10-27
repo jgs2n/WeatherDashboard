@@ -38,6 +38,7 @@ pytestmark = pytest.mark.skipif(
 REQUIRED_KEYS = {
     '_schemaVersion', 'timestamp', 'lat', 'lon', 'country', 'locationName',
     'displayedCondition', 'precip', 'sky', 'trend', 'radar', 'model',
+    'obs', 'algoVersion', 'gitSha',            # schema v3
 }
 
 
@@ -105,7 +106,9 @@ def test_schema_required_keys(smoke_run):
                 rec = json.loads(line)
                 missing = REQUIRED_KEYS - set(rec.keys())
                 assert not missing, f'{jsonl}:{line_no} missing keys: {missing}'
-                assert rec['_schemaVersion'] == 2
+                assert rec['_schemaVersion'] == 3
+                if rec['radar']:
+                    assert rec['radar']['sampleStatus'] in ('ok', 'no_echo', 'fetch_failed')
 
 
 def test_record_validation_flags(smoke_run):

@@ -267,6 +267,20 @@ function renderClimoTile(climo) {
     </div>`;
 }
 
+// "Now" in the frame of Open-Meteo's timezone=auto times. Those strings
+// ("2026-10-25T14:00") carry no offset, so new Date(t) reads them as DEVICE
+// wall-clock time. Rather than re-parse every string (and break the labels,
+// which rely on that reading to show the location's wall clock), shift now
+// instead: the returned Date's device-local fields equal the location's wall
+// clock, so `new Date(t) >= omLocalNow()` compares like with like. Use only
+// for comparisons against Open-Meteo times, never as a real instant.
+// utcOffsetSec is the response's utc_offset_seconds; null = device-local.
+function omLocalNow(utcOffsetSec = cachedUtcOffsetSec) {
+    const now = new Date();
+    if (utcOffsetSec === null || utcOffsetSec === undefined) return now;
+    return new Date(now.getTime() + utcOffsetSec * 1000 + now.getTimezoneOffset() * 60000);
+}
+
 function formatSunTime(isoString) {
     const date = new Date(isoString);
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -292,7 +306,7 @@ function getPressureTrend(hourlyData) {
         return { arrow: '', change: 0, color: 'var(--text-secondary)', label: '' };
     }
 
-    const now = new Date();
+    const now = omLocalNow();
     let currentIdx = -1;
     for (let i = 0; i < hourlyData.time.length; i++) {
         if (new Date(hourlyData.time[i]) >= now) {

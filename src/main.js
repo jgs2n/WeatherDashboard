@@ -4,9 +4,12 @@
 
 // Cleanup helper — stops polling/lightning/radar for a location switch
 function cleanupLocationState() {
+    _loadGen++; // invalidate any in-flight fetchWeatherDataDirect
     stopNowcastPolling();
+    _stopAlertRefresh();
     if (typeof stopLightning === 'function') stopLightning();
     if (typeof resetRadarState === 'function') resetRadarState();
+    if (typeof resetSkyHysteresis === 'function') resetSkyHysteresis();
     if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
 }
 
@@ -71,7 +74,11 @@ function renderTabs() {
     }
 }
 
-// Background fetch: temps + nowcast icons for all location tabs.
+// Background fetch: temps + WMO icons for all location tabs.
+// Deliberately does NOT run getNowSummary per city: the radar/nowcast/lightning
+// state is a singleton owned by the active city, and resetting it here
+// corrupted the active nowcast (and raced loadRadarHistory). The active tab's
+// nowcast icon comes from fetchWeatherDataDirect / the nowcast poll instead.
 let _bgTempRunning = false;
 async function fetchAllLocationTemps() {
     if (_bgTempRunning) return;
@@ -79,45 +86,33 @@ async function fetchAllLocationTemps() {
     try {
         for (const loc of savedLocations) {
             if (!loc.lat || !loc.lon) continue;
+            if (activeLocation && loc.name === activeLocation.name) continue;
             const result = await fetchTabTemp(loc.lat, loc.lon);
             if (result) {
-                locationTemps[loc.name] = { ...locationTemps[loc.name], ...result };
+                const { modelContext, ...tabTemp } = result;
+                // Drop any nowcast icon left from when this city was active — it ages out.
+                locationTemps[loc.name] = { ...locationTemps[loc.name], ...tabTemp, nowcastIcon: null };
             }
-            // Nowcast icon for tab — keyed by loc.name (loop var), never activeLocation.name
-            try {
-                if (typeof resetSkyHysteresis === 'function') resetSkyHysteresis();
-                if (typeof resetRadarState === 'function') resetRadarState();
-                if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
-                const summary = await getNowSummary({
-                    lat: loc.lat, lon: loc.lon,
-                    country: loc.country || '',
-                    modelWMO: result ? result.code : null,
-                    locationName: loc.name,       // explicit — avoids reading activeLocation.name
-                    stateCode: loc.stateCode || null,
-                    modelContext: result ? result.modelContext : null,
-                });
-                if (summary && summary.nowcastState) {
-                    const isDay = result ? result.is_day : true;
-                    const label = _pickNowcastLabel(summary.nowcastState);
-                    const icon = resolveNightIcon(label.icon, isDay);
-                    if (!locationTemps[loc.name]) locationTemps[loc.name] = {};
-                    locationTemps[loc.name].nowcastIcon = icon;
-                }
-            } catch (e) {
-                console.warn(`[Tabs] Nowcast icon failed for ${loc.name}:`, e.message);
-            }
-            renderTabs();
         }
     } finally {
         _bgTempRunning = false;
     }
+    renderTabs();
+}
+
+// Tab icon for the active city from its nowcast (keyed by the loaded location).
+function _setTabNowcastIcon(locName, summary, isDay) {
+    if (!summary || !summary.nowcastState) return;
+    const label = _pickNowcastLabel(summary.nowcastState);
+    if (!locationTemps[locName]) locationTemps[locName] = {};
+    locationTemps[locName].nowcastIcon = resolveNightIcon(label.icon, isDay);
 }
 
 let _tabRefreshInterval = null;
 function startTabRefresh() {
     if (_tabRefreshInterval) clearInterval(_tabRefreshInterval);
     _tabRefreshInterval = setInterval(() => {
-        fetchAllLocationTemps();
+        if (!document.hidden) fetchAllLocationTemps();
     }, 5 * 60 * 1000);
 }
 // Stop the 5-min background tab refresh that polls every saved city.
@@ -153,6 +148,7 @@ function refreshWeather() {
         if (btn) btn.classList.remove('refreshing');
     };
 
+    cleanupLocationState();
     if (activeLocation.lat && activeLocation.lon) {
         fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation).then(done).catch(done);
     } else {
@@ -182,6 +178,7 @@ async function showAddLocationPrompt() {
         };
 
         savedLocations.push(newLocation);
+        cleanupLocationState();
         activeLocation = newLocation;
         saveLocations();
         renderTabs();
@@ -219,6 +216,7 @@ async function addNewLocation(locationName) {
         };
 
         savedLocations.push(newLocation);
+        cleanupLocationState();
         activeLocation = newLocation;
         saveLocations();
         renderTabs();
@@ -270,6 +268,7 @@ function removeLocation(index) {
 
     // If we removed the active location, switch to the first one or null
     if (activeLocation && activeLocation.name === removedLocation.name) {
+        cleanupLocationState();
         if (savedLocations.length > 0) {
             activeLocation = savedLocations[0];
             if (activeLocation.lat && activeLocation.lon) {
@@ -310,10 +309,7 @@ function toggleGeoMe() {
         renderTabs();
 
         if (activeLocation && activeLocation.lat && activeLocation.lon) {
-            stopNowcastPolling();
-            if (typeof stopLightning === 'function') stopLightning();
-            if (typeof resetRadarState === 'function') resetRadarState();
-            if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
+            cleanupLocationState();
             fetchWeatherDataDirect(activeLocation.lat, activeLocation.lon, activeLocation);
         }
     } else {
@@ -327,10 +323,7 @@ function toggleGeoMe() {
         geoMeActive = true;
         saveGeoMeState();
 
-        stopNowcastPolling();
-        if (typeof stopLightning === 'function') stopLightning();
-        if (typeof resetRadarState === 'function') resetRadarState();
-        if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
+        cleanupLocationState();
 
         if (lastGeoPosition) {
             activeLocation = lastGeoPosition;
@@ -364,10 +357,7 @@ function _startGeoMeWatch() {
             saveGeoMeState();
             renderTabs();
 
-            stopNowcastPolling();
-            if (typeof stopLightning === 'function') stopLightning();
-            if (typeof resetRadarState === 'function') resetRadarState();
-            if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
+            cleanupLocationState();
             fetchWeatherDataDirect(geoLoc.lat, geoLoc.lon, geoLoc);
         },
         (err) => {
@@ -692,8 +682,8 @@ function fillTier2Data(openMeteo, airQuality, nws, location, modelComparison, re
     updateYellowLane(spcData);
     if (nowSummary) updateBlueLane(nowSummary);
     _applySuppression();
-    if (nws) {
-        if (nws.forecast) updateNWSForecasts(nws, openMeteo.daily);
+    if (nws && nws.forecast) {
+        updateNWSForecasts(nws, openMeteo.daily);
         updateNWSToggle();
     }
     if (modelComparison) updateModelSpread(openMeteo.daily, modelComparison);
@@ -734,8 +724,41 @@ async function _resolveAndFetch(locationName) {
     }
 }
 
+// Load generation: bumped by every load and by cleanupLocationState, so a
+// slow load for a city the user already left can't render, persist nowcast
+// state or start lightning/polling for it.
+let _loadGen = 0;
+
+// NWS alerts refresh alongside the nowcast poll (and on return to the app):
+// a warning issued after first paint must show up without a manual refresh.
+const ALERT_REFRESH_MS = 5 * 60 * 1000;
+let _alertTimer = null;
+let _alertVisHandler = null;
+function _startAlertRefresh(lat, lon, gen) {
+    _stopAlertRefresh();
+    const refresh = async () => {
+        if (document.hidden || gen !== _loadGen) return;
+        const alerts = await fetchNWSAlerts(lat, lon);
+        if (gen !== _loadGen) return;
+        // Keep the last good alerts on a transient failure.
+        if (alerts !== null) { updateRedLane({ alerts }); _applySuppression(); }
+    };
+    _alertTimer = setInterval(refresh, ALERT_REFRESH_MS);
+    _alertVisHandler = () => { if (!document.hidden) refresh(); };
+    document.addEventListener('visibilitychange', _alertVisHandler);
+}
+function _stopAlertRefresh() {
+    if (_alertTimer) { clearInterval(_alertTimer); _alertTimer = null; }
+    if (_alertVisHandler) {
+        document.removeEventListener('visibilitychange', _alertVisHandler);
+        _alertVisHandler = null;
+    }
+}
+
 // Fetch weather data using coordinates directly (no search/picker)
 async function fetchWeatherDataDirect(lat, lon, location) {
+    const gen = ++_loadGen;
+    const stale = () => gen !== _loadGen;
     const container = document.getElementById('weatherContainer');
     container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading weather data...</div>';
 
@@ -754,6 +777,7 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 
         // Render as soon as Tier 1 resolves (~500ms)
         const openMeteoData = await tier1Promise;
+        if (stale()) return;
         cachedUtcOffsetSec = openMeteoData?.utc_offset_seconds ?? null;
         renderWeatherDashboard(openMeteoData, null, null, location, null, null, null);
 
@@ -766,7 +790,8 @@ async function fetchWeatherDataDirect(lat, lon, location) {
         let steering = { speedMph: null, dirFromDeg: null };
         const hh = openMeteoData?.hourly;
         if (hh && hh.time && hh.wind_speed_700hPa) {
-            const nowIdx = Math.max(0, hh.time.findIndex(t => new Date(t) >= new Date()) - 1);
+            const nowLocal = omLocalNow(openMeteoData.utc_offset_seconds);
+            const nowIdx = Math.max(0, hh.time.findIndex(t => new Date(t) >= nowLocal) - 1);
             steering = {
                 speedMph:   hh.wind_speed_700hPa[nowIdx] ?? null,
                 dirFromDeg: hh.wind_direction_700hPa?.[nowIdx] ?? null,
@@ -797,14 +822,18 @@ async function fetchWeatherDataDirect(lat, lon, location) {
             modelContext: modelCtx,
             modelWMO: cur?.weather_code ?? null,
         });
+        if (stale()) return;
 
         // Fill in Tier 2 when ready (often already resolved by now)
         const [airQualityData, nwsData, modelData, meteostatRaw, nwsObsHistory, stationObs, spcData] = await tier2Promise;
+        if (stale()) return;
 
         const recentPrecipData = buildRecentPrecip(meteostatRaw, openMeteoData.hourly, openMeteoData.timezone || 'UTC', nwsObsHistory);
         cachedStationObs = stationObs;
         cachedNowSummary = nowSummary;
         saveNowcastState(nowSummary, lat, lon);
+        _setTabNowcastIcon(location.name, nowSummary, cur ? cur.is_day === 1 : true);
+        renderTabs();
 
         // Start lightning polling early so GLM data is available ASAP
         if (typeof startLightning === 'function') startLightning(lat, lon, location.country);
@@ -813,12 +842,15 @@ async function fetchWeatherDataDirect(lat, lon, location) {
 
         // Start nowcast polling — pass modelCtx so poll-loop records get model data
         startNowcastPolling(lat, lon, location.country, location.name, location.stateCode || null, modelCtx, cur?.weather_code ?? null);
+        // Alerts are fetched independently of the NWS forecast; only re-poll
+        // where NWS answered at all (US), so non-US locations stay untouched.
+        if (nwsData) _startAlertRefresh(lat, lon, gen);
 
         if (!airQualityData) {
             setTimeout(async () => {
                 try {
                     const retryData = await fetchAirQuality(lat, lon);
-                    if (retryData) updateAQITile(retryData);
+                    if (retryData && !stale()) updateAQITile(retryData);
                 } catch (_) { /* already logged by fetchAirQuality */ }
             }, 2000);
         }
@@ -836,6 +868,7 @@ async function fetchWeatherDataDirect(lat, lon, location) {
             } catch (_) { /* logged in climatology service */ }
         }, 2500);
     } catch (error) {
+        if (stale()) return;
         container.innerHTML = `<div class="card"><div class="alert-title">Error</div><p>${error.message}</p></div>`;
     }
 }
@@ -969,6 +1002,7 @@ function _welcomeSaveAndFetch(loc) {
         stateCode: loc.stateCode || null
     };
     savedLocations.push(newLocation);
+    cleanupLocationState();
     activeLocation = newLocation;
     saveLocations();
     renderTabs();

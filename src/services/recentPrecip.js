@@ -70,7 +70,8 @@ function buildRecentPrecip(meteostatRaw, openMeteoHourly, timezone, nwsHistory) 
 
     // 3. Open-Meteo model — always available, estimated
     if (!result) {
-        result = _buildFallback(openMeteoHourly, now, timezone);
+        // Open-Meteo times are location-local and offset-less — compare in that frame.
+        result = _buildFallback(openMeteoHourly, omLocalNow(), timezone);
     }
 
     // Attach 3h forecast from Open-Meteo (separate from observed series)
@@ -341,7 +342,7 @@ function _nearestHourIdx(times, target) {
 
 function buildFutureHours(openMeteoHourly, count = 3) {
     if (!openMeteoHourly || !openMeteoHourly.time) return [];
-    const now = new Date();
+    const now = omLocalNow();
     // Find first future hour (strictly after now)
     let startIdx = -1;
     for (let i = 0; i < openMeteoHourly.time.length; i++) {

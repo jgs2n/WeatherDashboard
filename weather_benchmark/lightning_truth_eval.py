@@ -18,9 +18,18 @@ Usage (from weather_benchmark/):
     python lightning_truth_eval.py --days 3
     python lightning_truth_eval.py --cities Atlanta Savannah
     python lightning_truth_eval.py --json reports/truth_eval.json
+    python lightning_truth_eval.py --include-uncovered   # pre-coverage behaviour
+    python lightning_truth_eval.py --start 2026-09-01 --end 2026-10-15
+
+Coverage: polls whose 30-min truth window was not fully recorded by the
+Blitzortung recorder (see data/lightning_truth/coverage/, written by
+collector_lib/blitzortung_truth.py) are excluded — "no strikes" there means
+"recorder was down", not "no lightning". Polls older than the first coverage
+event are 'unknown' and kept (no way to tell), but counted separately.
 """
 
 import argparse
+import bisect
 import json
 import glob
 import math
@@ -39,6 +48,12 @@ RANK = {'none': 0, 'approaching': 1, 'nearby': 2, 'active': 3}
 # cloud-to-ground, weaker on intracloud (which GLM sees well). A GLM warning
 # with no truth strike nearby is therefore only *probably* a false alarm.
 COLD_START_BACKFILL_MIN = 10   # v0.9.5 cold-start budget (COLD_START_MAX_FILES)
+# Recorder liveness: an interval runs connect → disconnect; without a
+# disconnect (crash/kill) it ends one heartbeat-grace after the last heartbeat.
+HEARTBEAT_GRACE_MS = 90 * 1000
+# Gaps shorter than this between intervals (a quick reconnect) still count as
+# covered — strikes in a few seconds of reconnect are negligible.
+COVERAGE_GAP_TOL_MS = 120 * 1000
 
 
 def load_cities():
@@ -99,6 +114,65 @@ def load_truth(cities, start, end):
     return out, scanned, kept
 
 
+def load_coverage(start, end):
+    """Merged recorder-alive intervals [(start_ms, end_ms)], plus the time of
+    the first coverage event (None if no coverage data exists at all)."""
+    files = sorted(glob.glob(os.path.join(HERE, 'data', 'lightning_truth', 'coverage', '*.jsonl')))
+    events = []
+    for path in files:
+        day = os.path.basename(path)[:10]
+        if day < (start - timedelta(days=2)).strftime('%Y-%m-%d') or day > end.strftime('%Y-%m-%d'):
+            continue
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                    events.append((iso_ms(e['t']), e['event']))
+                except (ValueError, KeyError):
+                    continue
+    return merge_coverage(events)
+
+
+def merge_coverage(events):
+    """[(time_ms, event)] -> (merged alive intervals, first event time or None)."""
+    events = sorted(events)
+    intervals = []
+    cur_start = cur_end = None
+    for t, ev in events:
+        if ev == 'connect':
+            if cur_start is not None:   # no disconnect seen: recorder died
+                intervals.append((cur_start, cur_end + HEARTBEAT_GRACE_MS))
+            cur_start = cur_end = t
+        elif cur_start is None:
+            continue                    # heartbeat/disconnect before any connect in range
+        elif ev == 'heartbeat':
+            cur_end = t
+        elif ev == 'disconnect':
+            intervals.append((cur_start, t))
+            cur_start = cur_end = None
+    if cur_start is not None:
+        intervals.append((cur_start, cur_end + HEARTBEAT_GRACE_MS))
+
+    merged = []
+    for a, b in sorted(intervals):
+        if merged and a - merged[-1][1] <= COVERAGE_GAP_TOL_MS:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    first = events[0][0] if events else None
+    return merged, first
+
+
+def window_coverage(merged, first_event_ms, lo_ms, hi_ms):
+    """'covered' | 'uncovered' | 'unknown' for the truth window [lo, hi]."""
+    if first_event_ms is None or lo_ms < first_event_ms:
+        return 'unknown'
+    i = bisect.bisect_right(merged, (lo_ms, float('inf'))) - 1
+    if i >= 0 and merged[i][0] <= lo_ms and merged[i][1] >= hi_ms:
+        return 'covered'
+    return 'uncovered'
+
+
 def load_records(slug, start, end):
     recs = []
     pattern = os.path.join(HERE, 'data', 'logs', slug, '*.jsonl')
@@ -153,7 +227,6 @@ def truth_state(strikes, lo, hi, now_ms, *, floor_ms=None):
 
 def window_bounds(strikes, now_ms, span_ms):
     """[lo, hi) index range of strikes in (now-span, now]."""
-    import bisect
     lo = bisect.bisect_left(strikes, (now_ms - span_ms, -1))
     hi = bisect.bisect_right(strikes, (now_ms, 1e9))
     return lo, hi
@@ -168,10 +241,16 @@ def main():
     ap.add_argument('--days', type=int, default=7)
     ap.add_argument('--cities', nargs='*')
     ap.add_argument('--json', help='write the full result as JSON here')
+    ap.add_argument('--start', help='window start YYYY-MM-DD (UTC); overrides --days')
+    ap.add_argument('--end', help='window end YYYY-MM-DD (UTC, exclusive); default now')
+    ap.add_argument('--include-uncovered', action='store_true',
+                    help='score polls even when the recorder was down for their window')
     args = ap.parse_args()
 
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=args.days)
+    end = (datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end
+           else datetime.now(timezone.utc))
+    start = (datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc) if args.start
+             else end - timedelta(days=args.days))
     cities = load_cities()
     if args.cities:
         want = {c.lower() for c in args.cities}
@@ -180,7 +259,12 @@ def main():
     print(f'LIGHTNING TRUTH JOIN — {start:%Y-%m-%d %H:%M}Z to {end:%Y-%m-%d %H:%M}Z, '
           f'{len(cities)} cities')
     truth, scanned, kept = load_truth(cities, start, end)
-    print(f'Blitzortung: {scanned:,} strikes scanned, {kept:,} within 45 mi of a city\n')
+    print(f'Blitzortung: {scanned:,} strikes scanned, {kept:,} within 45 mi of a city')
+    cov_intervals, cov_first = load_coverage(start, end)
+    print(f'Recorder coverage: {len(cov_intervals):,} alive interval(s)'
+          + (f' since {datetime.fromtimestamp(cov_first / 1000, timezone.utc):%Y-%m-%d %H:%MZ}'
+             if cov_first else ' - no coverage log yet (all polls "unknown")') + '\n')
+    coverage = Counter()
 
     confusion = Counter()          # (truth_state, shown_state)
     dist_err = []                  # shown nearest - truth nearest (mi)
@@ -194,6 +278,10 @@ def main():
         strikes = truth[c['name']]
         recs = load_records(city_slug(c['name']), start, end)
         for now_ms, r in recs:
+            cov = window_coverage(cov_intervals, cov_first, now_ms - BAND_40MI_WINDOW, now_ms)
+            coverage[cov] += 1
+            if cov == 'uncovered' and not args.include_uncovered:
+                continue
             lt = r.get('lightning') or {}
             shown = lt.get('state') or 'none'
             polls += 1
@@ -219,7 +307,11 @@ def main():
         return rows, sum(rows.values())
 
     print(f'Polls scored: {polls:,}  (GLM disconnected in {disconnected}, '
-          f'warning shown on a >30-min-stale buffer {stale_buffer})\n')
+          f'warning shown on a >30-min-stale buffer {stale_buffer})')
+    print(f'Truth-window coverage: covered {coverage["covered"]:,}, '
+          f'unknown (pre-coverage-log) {coverage["unknown"]:,}, '
+          f'uncovered {coverage["uncovered"]:,} '
+          f'({"included" if args.include_uncovered else "excluded"})\n')
 
     print('TRUTH → SHOWN  (rows = Blitzortung reality, cols = what the app showed)')
     print(f"{'truth':<13}{'n':>7}  {'none':>7}{'apprch':>8}{'nearby':>8}{'active':>8}")
@@ -282,8 +374,10 @@ def main():
     if args.json:
         payload = {
             'window': {'start': start.isoformat(), 'end': end.isoformat(),
-                       'days': args.days},
+                       'days': round((end - start).total_seconds() / 86400, 2)},
             'polls': polls,
+            'coverage': dict(coverage),
+            'uncovered_excluded': not args.include_uncovered,
             'confusion': {f'{t}->{s}': n for (t, s), n in confusion.items()},
             'dist_err_median': statistics.median(dist_err) if dist_err else None,
             'cold_start': {f'{f}->{c}': n for (f, c), n in cold_gap.items()},

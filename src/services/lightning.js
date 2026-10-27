@@ -112,11 +112,16 @@ const LIGHTNING_CFG = {
 
 let _jsfive = null;
 
+// Resolved against this script's URL, not the site root: on the GitHub Pages
+// project site (/WeatherDashboard/) a root-absolute '/lib/…' 404s. The result
+// matches sw.js's precache entry 'lib/jsfive.esm.js' (scope-relative).
+const _JSFIVE_URL = new URL('../../lib/jsfive.esm.js',
+    (document.currentScript && document.currentScript.src) || location.href).href;
+
 async function _loadJsfive() {
     if (_jsfive) return _jsfive;
     try {
-        // Resolve relative to page root using absolute path
-        const mod = await import('/lib/jsfive.esm.js');
+        const mod = await import(_JSFIVE_URL);
         _jsfive = mod;
         console.log('[Lightning] jsfive HDF5 reader loaded');
         return _jsfive;
@@ -131,7 +136,10 @@ async function _loadJsfive() {
 let _lxBuffer = [];               // [{ lat, lon, timeMs, energy }]
 let _lxDedup  = new Set();        // O(1) dedup keys for buffer entries
 let _lxPollTimer = null;
-let _lxLastPollOk = false;        // did last poll succeed?
+let _lxLastListOkMs = null;       // last S3 listing fetched + parsed OK (ingest health)
+let _lxGen = 0;                   // bumped by start/stop — a stale poll chain sees a mismatch
+let _lxVisHandler = null;         // pauses polling while the page is hidden
+let _lxPollInFlight = false;      // a poll is awaiting fetches (no timer pending)
 let _lxLat = null;
 let _lxLon = null;
 let _lxLastFlashAt = null;
@@ -474,8 +482,8 @@ function _recordBackfillSpend(now, bytes) {
  * the buffer spans BUFFER_MAX_AGE_MS. Runs once, after first paint, in the
  * background; a partial result still helps, so every early exit is safe.
  */
-async function _backfillOlderFiles() {
-    if (_lxStopped || _lxLat == null) return;
+async function _backfillOlderFiles(gen) {
+    if (gen !== _lxGen || _lxStopped || _lxLat == null) return;
     if (!_isInGlmCoverage(_lxLat, _lxLon)) return;
     // startLightning can fire twice on one load; without this, two runs fetch
     // the same files concurrently and double the spend (observed 2026-09-07).
@@ -504,25 +512,28 @@ async function _backfillOlderFiles() {
 
     _lxBackfillRunning = true;
     try {
-        await _runBackfill(nowMs, runBudget);
+        await _runBackfill(nowMs, runBudget, gen);
     } finally {
         _lxBackfillRunning = false;
     }
 }
 
 /** The fetching half of the backfill, once the guards above have allowed it. */
-async function _runBackfill(nowMs, runBudget) {
+async function _runBackfill(nowMs, runBudget, gen) {
+    // gen, not _lxStopped: a restart clears _lxStopped, and this run must not
+    // write an old location's flashes into the new buffer.
+    const stale = () => gen !== _lxGen || _lxStopped;
     const hdf5 = await _loadJsfive();
-    if (!hdf5 || _lxStopped) return;
+    if (!hdf5 || stale()) return;
 
     const bucket = _pickSatBucket(_lxLon);
     const signal = _lxAbortController ? _lxAbortController.signal : undefined;
     const opts = { maxAgeMs: LIGHTNING_CFG.BUFFER_MAX_AGE_MS, latencyFallback: false };
 
     const cur = await _listAndFilter(bucket, new Date(nowMs), nowMs, signal, opts);
-    if (_lxStopped) return;
+    if (stale()) return;
     const prev = await _listAndFilter(bucket, new Date(nowMs - 3600000), nowMs, signal, opts);
-    if (_lxStopped) return;
+    if (stale()) return;
 
     // Only files older than what we already hold — newer ones are the poll's job.
     let usable = prev.concat(cur);
@@ -547,7 +558,7 @@ async function _runBackfill(nowMs, runBudget) {
 
     const flashes = await _fetchAndParseFiles(bucket, picked, _lxLat, _lxLon, signal);
     _recordBackfillSpend(Date.now(), bytes);
-    if (_lxStopped) return;
+    if (stale()) return;
 
     console.log(`[Lightning] Backfill: ${picked.length} older file(s), `
         + `${(bytes / 1024).toFixed(0)} KB, +${flashes.length} flash(es)`);
@@ -556,7 +567,7 @@ async function _runBackfill(nowMs, runBudget) {
         _updateBuffer(flashes, Date.now());
         _saveBuffer();
         // The outer band may now clear a threshold it silently missed.
-        _refreshNowcastDisplay();
+        _refreshNowcastDisplay(gen);
     }
 }
 
@@ -579,6 +590,7 @@ async function _listAndFilter(bucket, utcDate, nowMs, signal, opts = {}) {
         const resp = await fetch(url, { signal, cache: 'no-cache' });
         if (!resp.ok) return [];
         entries = _parseS3Listing(await resp.text());
+        _lxLastListOkMs = Date.now();
     } catch { return []; }
 
     const cutoff = nowMs - maxAgeMs;
@@ -871,7 +883,7 @@ function summarizeLightningBuffer(lat, lon) {
         updatedAt: new Date().toISOString(),
         source: state !== 'none' ? 'lightning' : (provider === 'glm' ? 'none' : 'unavailable'),
         confidence,
-        connected: _lxLastPollOk,
+        connected: _isLightningConnected(now),
         bufferAgeMs: _lxLastFlashAt
             ? now - new Date(_lxLastFlashAt).getTime()
             : null,
@@ -882,6 +894,15 @@ function summarizeLightningBuffer(lat, lon) {
 }
 
 // ── Poll loop ────────────────────────────────────────────────────────────────
+
+// Connected = an S3 listing succeeded recently. Errors are swallowed inside
+// fetchGlmFlashes (it returns []), so "the poll didn't throw" said nothing.
+// Window: two quiet-cadence polls plus slack. Matches the collector, whose
+// last_poll_ok is the listing result.
+const _LX_CONNECTED_WINDOW_MS = 2 * LIGHTNING_CFG.POLL_QUIET_MS + 60 * 1000;
+function _isLightningConnected(now) {
+    return _lxLastListOkMs !== null && (now - _lxLastListOkMs) <= _LX_CONNECTED_WINDOW_MS;
+}
 
 function _computeLightningPollInterval() {
     // Use the most recent summary to decide cadence
@@ -901,11 +922,11 @@ function _computeLightningPollInterval() {
  * Recompute and repaint the nowcast because the lightning picture changed.
  * Used by the first poll with data and by the progressive backfill.
  */
-function _refreshNowcastDisplay() {
+function _refreshNowcastDisplay(gen) {
     if (typeof getNowSummary === 'function' && typeof updateNowcastDisplay === 'function') {
         getNowSummary({ lat: _lxLat, lon: _lxLon, country: _lxCountry })
             .then(summary => {
-                if (_lxStopped) return; // location changed — discard
+                if (gen !== _lxGen || _lxStopped) return; // location changed — discard
                 // Guard: verify active location still matches this lightning poll
                 if (activeLocation && (activeLocation.lat !== _lxLat || activeLocation.lon !== _lxLon)) return;
                 cachedNowSummary = summary;
@@ -915,44 +936,47 @@ function _refreshNowcastDisplay() {
     }
 }
 
-async function _lxPoll() {
-    if (_lxStopped || _lxLat == null) return;
+async function _lxPoll(gen = _lxGen) {
+    if (gen !== _lxGen || _lxStopped || _lxLat == null) return;
+    _lxPollTimer = null;
+    if (document.hidden) return;   // resumed by the visibilitychange handler
 
     const now = Date.now();
+    _lxPollInFlight = true;
     try {
         const signal = _lxAbortController ? _lxAbortController.signal : undefined;
         const flashes = await fetchGlmFlashes(_lxLat, _lxLon, signal);
-        if (_lxStopped) return; // location changed during fetch — discard stale data
-        _lxLastPollOk = true;
+        if (gen === _lxGen) _lxPollInFlight = false;
+        if (gen !== _lxGen || _lxStopped) return; // location changed during fetch — discard stale data
         _updateBuffer(flashes, now);
         _saveBuffer();
 
         // First successful poll with data: repaint immediately.
         if (_lxBuffer.length > 0 && !_lxFirstRefreshDone) {
             _lxFirstRefreshDone = true;
-            _refreshNowcastDisplay();
+            _refreshNowcastDisplay(gen);
         }
 
         // First poll is in and the UI has had a moment to paint -- now reach
         // back for the rest of the window the outer band assumes.
         if (_lxBackfillPending) {
             _lxBackfillPending = false;
-            setTimeout(() => { _backfillOlderFiles().catch(() => {}); },
+            setTimeout(() => { _backfillOlderFiles(gen).catch(() => {}); },
                        LIGHTNING_CFG.BACKFILL_DELAY_MS);
         }
 
     } catch (err) {
-        if (_lxStopped) return;
-        _lxLastPollOk = false;
+        if (gen === _lxGen) _lxPollInFlight = false;
+        if (gen !== _lxGen || _lxStopped) return;
         if (err.name !== 'AbortError') {
             console.warn('[Lightning] Poll error:', err.message);
         }
     }
 
-    if (_lxStopped) return;
+    if (gen !== _lxGen || _lxStopped || document.hidden) return;
 
     const interval = _computeLightningPollInterval();
-    _lxPollTimer = setTimeout(_lxPoll, interval);
+    _lxPollTimer = setTimeout(() => _lxPoll(gen), interval);
 }
 
 // ── Public: start / stop ─────────────────────────────────────────────────────
@@ -961,13 +985,15 @@ let _lxCountry = null;
 let _lxFirstRefreshDone = false;
 
 function startLightning(lat, lon, country) {
+    stopLightning();   // never run two poll chains (e.g. refresh without a location switch)
+    const gen = ++_lxGen;
     _lxLat = lat;
     _lxLon = lon;
     _lxCountry = country || null;
     _lxBuffer = [];
     _lxDedup = new Set();
     _lxLastFlashAt = null;
-    _lxLastPollOk = false;
+    _lxLastListOkMs = null;
     _lxStopped = false;
     _lxAbortController = new AbortController();
     _lxFirstRefreshDone = false;
@@ -991,13 +1017,26 @@ function startLightning(lat, lon, country) {
 
     console.log('[Lightning] Starting GLM polling');
 
+    // Pause while hidden (no S3 traffic in a backgrounded PWA); poll on return.
+    _lxVisHandler = () => {
+        if (document.hidden || gen !== _lxGen || _lxStopped) return;
+        if (!_lxPollTimer && !_lxPollInFlight) _lxPoll(gen);
+    };
+    document.addEventListener('visibilitychange', _lxVisHandler);
+
     // First poll immediately
-    _lxPoll();
+    _lxPoll(gen);
 }
 
 function stopLightning() {
     _saveBuffer();   // keep the window warm for the next open
+    _lxGen++;
     _lxStopped = true;
+    _lxPollInFlight = false;
+    if (_lxVisHandler) {
+        document.removeEventListener('visibilitychange', _lxVisHandler);
+        _lxVisHandler = null;
+    }
     if (_lxAbortController) { _lxAbortController.abort(); _lxAbortController = null; }
     if (_lxPollTimer) {
         clearTimeout(_lxPollTimer);
@@ -1006,7 +1045,7 @@ function stopLightning() {
     _lxBuffer = [];
     _lxDedup = new Set();
     _lxLastFlashAt = null;
-    _lxLastPollOk = false;
+    _lxLastListOkMs = null;
     _lxLat = null;
     _lxLon = null;
     _lxSeenFiles.clear();

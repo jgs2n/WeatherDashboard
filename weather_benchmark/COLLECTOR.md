@@ -55,13 +55,30 @@ authoritative field list. Key blocks:
 
 - **location identity:** lat, lon, country, stateCode, station, locationName
 - **displayed prediction:** displayedCondition, displayedIcon
-- **inputs at prediction time:** radar (dbz, rainState, motion), obs (METAR
-  via IEM ASOS), model (Open-Meteo current), modelHourly, lightning, trend
-- **schema version:** `_schemaVersion: 2`
+- **inputs at prediction time:** radar (dbz, rainState, sampleStatus, motion),
+  obs (the METAR the algorithm used: presentWeather, tempC/dewpointC, ageMin,
+  raw text), model (Open-Meteo current), modelHourly, lightning, trend
+- **provenance:** `algoVersion` (sw.js release the collector ports) and
+  `gitSha` (`git describe --always --dirty`), both read at collector startup
+- **schema version:** `_schemaVersion: 3` (v3 added `obs`, `radar.sampleStatus`,
+  `algoVersion`, `gitSha` — 2026-10-25; older records lack them)
+
+`radar.sampleStatus` is `ok` (echo sampled), `no_echo` (tile read, nothing
+there) or `fetch_failed` (tile could not be fetched). A failed fetch does not
+advance the rain hysteresis and is flagged `radar_fetch_failed` in
+`_validationFlags`, so exclude those polls from radar-skill analyses.
 
 Truth labels (`obs_precip_active`, `condition_+10`, etc.) are **not** in the
-JSONL — they're added later by `backtest.py` when it joins each snapshot to
-the IEM ASOS observation nearest in time.
+JSONL — they're added later by `backtest.py`, which matches each target time
+to the first raw 5-min/special observation at or after it (truth v2, see
+`src/lead_targets.py`).
+
+**Collector code changes only take effect after a collector restart.**
+
+Blitzortung truth recorder coverage (connect / per-minute heartbeat /
+disconnect) goes to `data/lightning_truth/coverage/YYYY-MM-DD.jsonl`;
+`lightning_truth_eval.py` drops polls whose 30-min truth window was not
+covered.
 
 ## Rate limit awareness
 
@@ -88,6 +105,65 @@ forecast for 30 min and the current weather for 5 min by default. Adjust
 their current poll up to `graceful_shutdown_sec` (default 30 s), then exit.
 No `acquiring.jsonl` machinery — per-day files are always closed properly
 between polls.
+
+## Supervision and alerts (Windows)
+
+Run once from an **elevated** PowerShell (again after any change to it):
+
+```
+powershell -ExecutionPolicy Bypass -File setup_collector_task.ps1
+```
+
+It registers two independent tasks, both "run whether user is logged on or
+not" (LogonType S4U, no stored password):
+
+| Task | Runs | Triggers |
+|---|---|---|
+| WeatherHQ Collector | `run_collector.cmd` | at startup, at logon, every 5 min (IgnoreNew → no-op while alive) |
+| WeatherHQ Health Alert | `run_health_check.cmd` → `health_check.py --alert` | every 15 min |
+
+Both launchers find Python through `find_python.cmd` (`WEATHERHQ_PYTHON` env
+var, `.venv`, the per-user python.org installs, `py -3`, then PATH; the first
+that can import requests/yaml/Pillow wins). The setup script restarts the
+collector (a few seconds of gap); `-HealthOnly` registers just the alert task.
+
+Files:
+- `collector.log` (+ `.1`–`.5`): the collector's log, ISO-8601 UTC
+  timestamps, rotated at `log_max_mb`. `collector.out.log` only holds output
+  from before logging starts (import errors, launcher lines).
+- `data/heartbeat.json`: rewritten every `metrics_interval_sec` — pid, start
+  time, per-city `lastWriteUtc` / polls / writes / errors, per-source
+  (`iem_asos`, `open_meteo`, `iem_tile`) ok/fail/stale counts.
+- `data/health_check_last.txt`: the alert task's last report.
+
+`python health_check.py` checks recency (FAIL when any city's newest record
+is older than `alerts.stale_after_min`, 15 min), duplicates (polls per city
+above one collector's 86400 / `poll_interval_sec`, e.g. 480/day — two
+collectors double it), 24 h coverage, longest gap, heartbeat and recent
+record quality. With `--alert` it notifies on Recency/Duplicates failures
+(again every `alerts.repeat_hours`, plus one "recovered" note):
+- desktop: a toast when run interactively; from the S4U task (no desktop)
+  a `msg.exe` popup to John's session — only seen while logged on;
+- phone: set `alerts.ntfy_topic` in `collector_config.yaml` (or env
+  `WEATHERHQ_NTFY_TOPIC`) and subscribe to the topic in the ntfy app. This is
+  the only channel that reaches you while nobody is logged on.
+
+`python health_check.py --test-alert` sends a test on every channel;
+`--now <ISO time in the future>` simulates a stale collector.
+
+**Fetch retries.** IEM ASOS and Open-Meteo go through one `requests.Session`
+that retries connection errors and 429/5xx 3× (backoff 1/2/4 s). If the
+fetch still fails, the last good response for that station/point is reused
+when ≤60 min old and the record gets `_staleSources: {obs|model|modelHourly:
+ageMin}` plus the `stale_cache` validation flag — exclude those polls where
+input freshness matters.
+
+**Verify the task survives a reboot without logon:** restart the PC and do
+not log in for ~10 minutes. Then log in and run `python health_check.py`:
+Longest gap should be about the reboot time only, and `startedUtc` in
+`data/heartbeat.json` should be *before* your logon time. In Task Scheduler,
+"WeatherHQ Collector" should show Last Run Time = boot time and
+`(Get-ScheduledTask "WeatherHQ Collector").Principal.LogonType` = `S4U`.
 
 ## Validation
 
@@ -177,9 +253,16 @@ Resulting `weekly_*.json` reports include `truth_source` per snapshot so
 metric shifts are auditable. If wgrib2 is missing, `--mrms` falls back
 gracefully to mesonet/ASOS with a warning.
 
-The first run downloads ~700 MB / day-of-window (compressed MRMS grids).
-Subsequent runs over the same window use the per-city cached time series
-under `data/obs_cache/mrms/` and require no further downloads.
+Each grid is downloaded once and every city is read from it in a single
+wgrib2 call (`fetch_mrms_multi`). At the default 10-min cadence that is
+~144 grids (~80 MB) per UTC day, about 75 s/day with 4 workers. Only
+UTC-complete days with >=90% grid coverage are cached
+(`data/obs_cache/mrms/<city>_<day>__v2_c10.csv`); later runs reuse them.
+
+Note: MRMS PrecipRate is itself radar-derived. It is the right truth for
+"was rain falling at this point at this minute", but it shares radar
+artifacts (e.g. drizzle below the beam, some virga) with the nowcast's own
+input, so keep the station (ASOS) truth alongside it.
 
 ## Optional: Synoptic mesonet truth (backtest only)
 

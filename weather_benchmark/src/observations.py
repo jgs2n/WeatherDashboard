@@ -7,9 +7,11 @@ as CSV files so repeated benchmark runs don't re-fetch.
 """
 
 import os
+import re
 import json
 import math
 import time
+import hashlib
 import logging
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
@@ -30,8 +32,25 @@ IEM_NETWORK_URL = 'https://mesonet.agron.iastate.edu/geojson/network/{network}.g
 # Fields we request from IEM
 IEM_DATA_FIELDS = 'tmpf,dwpf,relh,drct,sknt,gust,p01i,vsby,wxcodes,metar,skyc1,skyc2,skyc3,skyc4'
 
+# report_type '3,4' = routine + special METARs (the legacy hourly truth input).
+# '1' = the MADIS 5-minute feed; as of 2026-10 it carries wxcodes again
+# ('M' = no weather), so '1,3,4' gives ~290 obs/day with per-obs present
+# weather at most ASOS sites (military sites like KSVN have no 5-min feed).
+LEGACY_REPORT_TYPE = '3,4'
+RAW_REPORT_TYPE = '1,3,4'
+
+# Bump when the cached CSV's meaning changes. The cache key also carries the
+# report_type and a hash of the requested fields, so a change to either can
+# never silently reuse a file fetched under different parameters.
+CACHE_VERSION = 2
+# A UTC day is only cached once it is this far in the past — IEM keeps
+# ingesting late/corrected METARs for a while after the day ends.
+CACHE_SETTLE = timedelta(hours=3)
+_LEGACY_CACHE_RE = re.compile(r'^[A-Z0-9]{3,5}_\d{4}-\d{2}-\d{2}\.csv$')
+
 # In-process cache for IEM network station lists (keyed by network name, e.g. "FL_ASOS")
 _network_station_cache: dict = {}
+_purged_dirs: set = set()
 
 
 # ── IEM ASOS fetching ────────────────────────────────────────────────────────
@@ -46,29 +65,61 @@ def fetch_observations(
     state_code: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Fetch IEM ASOS observations for a station and date range.
-    Uses local cache for past dates; always re-fetches today.
+    Legacy truth: routine+special METARs bucketed to hourly rows.
+
+    Kept so old-vs-new truth comparisons can be reproduced (backtest
+    ``--truth legacy``). The hourly floor + wxcode union leaks up to 59 min of
+    future weather into each bucket; new code should use
+    ``fetch_raw_observations`` + ``metar_frame`` instead.
+
+    Returns (DataFrame, station_used, fallback_dist_km).
+    """
+    raw, used, dist = fetch_raw_observations(
+        station, start_date, end_date, cache_dir, lat=lat, lon=lon,
+        state_code=state_code, report_type=LEGACY_REPORT_TYPE)
+    if raw.empty:
+        return pd.DataFrame(), used, dist
+    return bucket_to_hourly(raw), used, dist
+
+
+def fetch_raw_observations(
+    station: str,
+    start_date: date,
+    end_date: date,
+    cache_dir: str,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    state_code: Optional[str] = None,
+    report_type: str = RAW_REPORT_TYPE,
+):
+    """
+    Fetch raw (un-bucketed) IEM ASOS rows for a station and date range.
+
+    Only UTC-complete days (ended more than CACHE_SETTLE ago) are written to
+    or read from the disk cache; anything newer is fetched every run.
 
     If the primary station returns no data and lat/lon/state_code are provided,
     automatically falls back to the nearest IEM ASOS station for that state.
 
-    Returns a DataFrame with hourly-bucketed observations.
+    Returns (raw DataFrame, station_used, fallback_dist_km).
     """
+    purge_legacy_cache(cache_dir)
     all_frames = []
     # Fetch one day before start so the 23:53Z obs from the prior day is
     # available for snapshots taken in the first few minutes of start_date UTC.
     current = start_date - timedelta(days=1)
-    today = date.today()
 
     while current <= end_date:
-        cached = _load_cached(station, current, cache_dir)
-        if cached is not None and current < today:
+        cacheable = _day_is_complete(current)
+        cached = _load_cached(station, current, cache_dir, report_type) if cacheable else None
+        if cached is not None:
             all_frames.append(cached)
         else:
             try:
-                raw = _fetch_day(station, current)
+                raw = _fetch_day(station, current, report_type)
                 if raw is not None and not raw.empty:
-                    _save_cache(raw, station, current, cache_dir)
+                    if cacheable:
+                        _save_cache(raw, station, current, cache_dir, report_type)
                     all_frames.append(raw)
                 else:
                     logger.warning(f'No IEM data for {station} on {current}')
@@ -90,15 +141,22 @@ def fetch_observations(
                 logger.info(
                     f'{station} not in IEM — trying {fallback_id} ({dist_km:.1f} km)'
                 )
-                result_df, _, _ = fetch_observations(fallback_id, start_date, end_date, cache_dir)
+                result_df, _, _ = fetch_raw_observations(
+                    fallback_id, start_date, end_date, cache_dir, report_type=report_type)
                 if not result_df.empty:
                     return result_df, fallback_id, dist_km
                 logger.info(f'{fallback_id} also returned no data, continuing search')
         logger.warning(f'No observations found for {station} from {start_date} to {end_date}')
         return pd.DataFrame(), station, 0.0
 
-    combined = pd.concat(all_frames, ignore_index=True)
-    return bucket_to_hourly(combined), station, 0.0
+    return pd.concat(all_frames, ignore_index=True), station, 0.0
+
+
+def _day_is_complete(day: date, now: Optional[datetime] = None) -> bool:
+    """True once the whole UTC day is in the past by at least CACHE_SETTLE."""
+    now = now or datetime.now(timezone.utc)
+    day_end = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) + timedelta(days=1)
+    return now >= day_end + CACHE_SETTLE
 
 
 def _ranked_fallback_stations(
@@ -159,7 +217,7 @@ def _ranked_fallback_stations(
     return top
 
 
-def _fetch_day(station: str, day: date) -> pd.DataFrame:
+def _fetch_day(station: str, day: date, report_type: str = LEGACY_REPORT_TYPE) -> pd.DataFrame:
     """Fetch one day of ASOS data from IEM."""
     params = {
         'station': station,
@@ -172,19 +230,25 @@ def _fetch_day(station: str, day: date) -> pd.DataFrame:
         'format': 'onlycomma',
         'latlon': 'no',
         'direct': 'no',
-        # v1.52.0: report_type '1' now returns ZERO rows from IEM (semantics
-        # changed upstream) — the scorer silently fell back to thunder-less
-        # sources and lightning FAR pinned at 100%. '3,4' = routine + special
-        # METARs with wxcodes.
-        'report_type': '3,4',
+        # v1.52.0: report_type '1' alone returned ZERO rows for a while
+        # (upstream change) — hence the legacy '3,4' (routine + special).
+        # '1,3,4' adds the 5-minute feed back for raw-obs truth.
+        'report_type': report_type,
     }
 
     logger.info(f'Fetching IEM ASOS: {station} {day}')
     for attempt in range(3):
-        resp = requests.get(IEM_ASOS_URL, params=params, timeout=30)
+        wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+        try:
+            resp = requests.get(IEM_ASOS_URL, params=params, timeout=30)
+        except requests.ConnectionError as e:
+            if attempt == 2:
+                raise
+            logger.warning(f'IEM connection error for {station} {day} ({e}), retrying in {wait}s')
+            time.sleep(wait)
+            continue
         if resp.status_code != 429:
             break
-        wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
         logger.warning(f'IEM rate-limited for {station} {day}, retrying in {wait}s (attempt {attempt + 1}/3)')
         time.sleep(wait)
     resp.raise_for_status()
@@ -208,12 +272,19 @@ def _fetch_day(station: str, day: date) -> pd.DataFrame:
 
 # ── Cache management ─────────────────────────────────────────────────────────
 
-def _cache_path(station: str, day: date, cache_dir: str) -> str:
-    return os.path.join(cache_dir, f'{station}_{day.isoformat()}.csv')
+def _cache_key(report_type: str) -> str:
+    fields_hash = hashlib.sha1(IEM_DATA_FIELDS.encode()).hexdigest()[:8]
+    return f'v{CACHE_VERSION}_rt{report_type.replace(",", "")}_{fields_hash}'
 
 
-def _load_cached(station: str, day: date, cache_dir: str) -> pd.DataFrame:
-    path = _cache_path(station, day, cache_dir)
+def _cache_path(station: str, day: date, cache_dir: str,
+                report_type: str = LEGACY_REPORT_TYPE) -> str:
+    return os.path.join(cache_dir, f'{station}_{day.isoformat()}__{_cache_key(report_type)}.csv')
+
+
+def _load_cached(station: str, day: date, cache_dir: str,
+                 report_type: str = LEGACY_REPORT_TYPE) -> pd.DataFrame:
+    path = _cache_path(station, day, cache_dir, report_type)
     if os.path.isfile(path):
         try:
             return pd.read_csv(path)
@@ -222,10 +293,115 @@ def _load_cached(station: str, day: date, cache_dir: str) -> pd.DataFrame:
     return None
 
 
-def _save_cache(df: pd.DataFrame, station: str, day: date, cache_dir: str):
+def _save_cache(df: pd.DataFrame, station: str, day: date, cache_dir: str,
+                report_type: str = LEGACY_REPORT_TYPE):
     os.makedirs(cache_dir, exist_ok=True)
-    path = _cache_path(station, day, cache_dir)
-    df.to_csv(path, index=False)
+    path = _cache_path(station, day, cache_dir, report_type)
+    tmp = path + '.tmp'
+    df.to_csv(tmp, index=False)
+    os.replace(tmp, path)   # never leave a half-written cache file behind
+
+
+def purge_legacy_cache(cache_dir: str) -> int:
+    """Delete pre-v2 cache files (``STATION_YYYY-MM-DD.csv``).
+
+    Those were keyed only by station+day, so they may hold partial current-day
+    data (saved mid-day and then reused forever — e.g. KBOS_2026-07-19.csv
+    stops at 13:xxZ) or rows fetched under an older report_type. Runs once per
+    directory per process. Returns the number of files removed.
+    """
+    if cache_dir in _purged_dirs or not os.path.isdir(cache_dir):
+        return 0
+    _purged_dirs.add(cache_dir)
+    removed = 0
+    for name in os.listdir(cache_dir):
+        if _LEGACY_CACHE_RE.match(name):
+            try:
+                os.remove(os.path.join(cache_dir, name))
+                removed += 1
+            except OSError as e:
+                logger.warning(f'Could not purge stale cache {name}: {e}')
+    if removed:
+        logger.info(f'Purged {removed} legacy (unversioned) IEM cache file(s) from {cache_dir}')
+    return removed
+
+
+# ── Raw per-observation frame (v2 truth) ─────────────────────────────────────
+
+# Present-weather precipitation codes. Descriptors (TS/SH/FZ) may prefix them;
+# BL/DR (blowing/drifting) and VC (vicinity) do not mean precip at the station.
+_PRECIP_CODES = ('DZ', 'RA', 'SN', 'SG', 'IC', 'PL', 'GR', 'GS', 'UP')
+
+
+def wx_has_precip(wxcodes) -> bool:
+    """True if a METAR present-weather string reports precip AT the station."""
+    if not isinstance(wxcodes, str) or not wxcodes.strip():
+        return False
+    for tok in wxcodes.upper().split():
+        tok = tok.lstrip('+-')
+        if tok.startswith(('VC', 'BL', 'DR')):
+            continue
+        if any(code in tok for code in _PRECIP_CODES):
+            return True
+    return False
+
+
+def metar_frame(raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per raw observation (5-min, routine or special) — no bucketing.
+
+    Every label comes from that single observation's own present-weather
+    codes and sky layers, so nothing from later in the hour can leak in.
+
+    Columns: time_utc, wxcodes, precip_active, has_thunder, condition_category,
+             precip_in (p01i as reported; NaN on 5-min rows), sky_cover,
+             report_kind ('5min' | 'metar'), source='asos'
+    """
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    time_col = 'valid' if 'valid' in raw.columns else raw.columns[1]
+    df = raw.copy()
+    df['_ts'] = pd.to_datetime(df[time_col], utc=True, errors='coerce')
+    df = df.dropna(subset=['_ts'])
+    if df.empty:
+        return pd.DataFrame()
+
+    def _col(name, fill=''):
+        if name not in df.columns:
+            return [fill] * len(df)
+        return [v.strip() if isinstance(v, str) else fill for v in df[name]]
+
+    wx = _col('wxcodes')
+    metar = _col('metar')
+    cover_priority = {'OVC': 5, 'BKN': 4, 'SCT': 3, 'FEW': 2, 'VV': 5, 'CLR': 1, 'SKC': 1}
+    layers = list(zip(*[_col(c) for c in ('skyc1', 'skyc2', 'skyc3', 'skyc4')]))
+    sky = []
+    for ls in layers:
+        best, best_p = 'CLR', 0
+        for v in ls:
+            p = cover_priority.get(v.upper(), 0)
+            if p > best_p:
+                best, best_p = v.upper(), p
+        sky.append(best)
+
+    out = pd.DataFrame({
+        'time_utc': df['_ts'].values,
+        'wxcodes': wx,
+        'precip_active': [wx_has_precip(w) for w in wx],
+        'has_thunder': [has_thunder(w) for w in wx],
+        'precip_in': (pd.to_numeric(df['p01i'], errors='coerce').values
+                      if 'p01i' in df.columns else float('nan')),
+        'sky_cover': sky,
+        'report_kind': ['5min' if 'MADISHF' in m else 'metar' for m in metar],
+        'source': 'asos',
+    })
+    out['condition_category'] = [metar_wx_to_category(w, c, legacy=False)
+                                 for w, c in zip(out['wxcodes'], out['sky_cover'])]
+    out['time_utc'] = pd.to_datetime(out['time_utc'], utc=True)
+    out = (out.sort_values('time_utc', kind='stable')
+              .drop_duplicates(subset=['time_utc', 'report_kind'], keep='last')
+              .reset_index(drop=True))
+    return out
 
 
 # ── Hourly bucketing ─────────────────────────────────────────────────────────

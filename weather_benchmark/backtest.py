@@ -10,6 +10,13 @@ Usage:
     python backtest.py --days 14            # Last 14 days
     python backtest.py --city "Arden, NC"   # Single city
     python backtest.py --export-ml          # Also export ML feature CSV
+    python backtest.py --truth legacy       # Pre-2026-10-25 hourly ASOS truth
+    python backtest.py --mrms               # MRMS -> ASOS truth chain
+
+Truth v2 (default): ASOS labels come from raw 5-min/special observations
+matched one-sided (first obs at/after the target time) — see
+src/lead_targets.py. ``--truth legacy`` reproduces the old hourly-bucket,
+two-sided-nearest truth for comparison only.
 """
 
 import argparse
@@ -18,6 +25,7 @@ import logging
 import os
 import sys
 import math
+from collections import Counter
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 
@@ -27,13 +35,15 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.ingest import load_jsonl_logs, LogRecord
-from src.observations import fetch_observations
+from src.observations import (
+    fetch_observations, fetch_raw_observations, metar_frame, RAW_REPORT_TYPE,
+)
 from src.mesonet_observations import (
     fetch_mesonet_observations,
     is_enabled as mesonet_enabled,
 )
 from src.mrms_observations import (
-    fetch_mrms_observations,
+    fetch_mrms_multi,
     resolve_wgrib2,
 )
 from src.nowcast_scoring import (
@@ -41,8 +51,12 @@ from src.nowcast_scoring import (
     build_nowcast_obs_window, score_precip_timing_nowcast,
     detect_precision_violations, NowcastMetrics,
 )
-from src.lead_targets import label_lead_targets, label_current_truth, LEAD_MINUTES
+from src.lead_targets import (
+    label_lead_targets, label_current_truth, resolve_truth, obs_between, LEAD_MINUTES,
+)
+from src.nowcast_scoring import _obs_nearest, _icon_matches_category
 from src.utils import metar_wx_to_category
+from collector_lib.provenance import algo_version, git_describe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,9 +112,16 @@ def backtest_city(
     config: dict,
     mesonet_obs: pd.DataFrame = None,
     mrms_obs: pd.DataFrame = None,
+    truth_mode: str = 'v2',
+    max_lag: dict = None,
 ) -> dict:
     """
     Run backtest for a single city.
+
+    ``truth_mode``: 'v2' — ``observations`` is the raw per-obs METAR frame and
+    every truth lookup is one-sided (src/lead_targets.py); 'legacy' —
+    ``observations`` is the hourly-bucketed frame with the old two-sided
+    nearest matching.
 
     Returns a dict with:
       - city metadata
@@ -119,10 +140,47 @@ def backtest_city(
     violations = []
     icon_results = []
     ml_rows = []
+    legacy = truth_mode == 'legacy'
+    has_mrms = mrms_obs is not None and not mrms_obs.empty
+    source_counts = {'current': Counter(), **{f'+{m}': Counter() for m in LEAD_MINUTES}}
 
     for rec in log_records:
         snap = rec.to_nowcast_snapshot()
-        obs_window = build_nowcast_obs_window(snap, observations, window_min=90)
+
+        if legacy:
+            obs_window = build_nowcast_obs_window(snap, observations, window_min=90)
+            timing_window = lightning_window = obs_window
+            obs_at_time = (_obs_nearest(obs_window, snap.snapshot_time)
+                           if not obs_window.empty else None)
+            lightning_obs = obs_at_time
+            current_truth = label_current_truth(rec, observations,
+                                                mesonet_obs=mesonet_obs,
+                                                mrms_obs=mrms_obs, legacy=True)
+        else:
+            t = resolve_truth(rec.timestamp, observations, mesonet_obs, mrms_obs,
+                              max_lag=max_lag)
+            current_truth = {
+                'obs_precip_active': t['precip_active'],
+                'obs_thunder': t['thunder'],
+                'obs_condition': t['condition'],
+                'obs_precip_in': t['precip_in'],
+                'truth_source': t['source'],
+                'truth_lag_min': t['lag_min'],
+            }
+            obs_at_time = None if t['source'] == 'none' else {
+                'condition_category': t['condition'],
+                'has_thunder': bool(t['thunder']),
+                'precip_in': t['precip_in'],
+            }
+            # Thunder unknown (MRMS row, no ASOS obs in the lag window):
+            # don't score lightning against an assumed "no thunder".
+            lightning_obs = obs_at_time if t['thunder'] is not None else None
+            w_start = pd.Timestamp(rec.timestamp) - timedelta(minutes=30)
+            w_end = pd.Timestamp(rec.timestamp) + timedelta(minutes=90)
+            lightning_window = obs_between(observations, w_start, w_end)
+            timing_window = obs_between(mrms_obs, w_start, w_end) if has_mrms else pd.DataFrame()
+            if timing_window.empty:
+                timing_window = lightning_window
 
         scored = {
             'timestamp': rec.timestamp.isoformat(),
@@ -135,17 +193,19 @@ def backtest_city(
             'radar_rain_state': rec.radar_rain_state,
             'trend_summary': rec.trend_summary,
             'trend_confidence': rec.trend_summary_confidence,
+            'trend_method': rec.trend_method,
+            'trend_begin_in_min': rec.trend_begin_in_min,
+            'trend_end_in_min': rec.trend_end_in_min,
+            'radar_sample_status': rec.radar_sample_status,
         }
 
         # Current-state truth: MRMS > mesonet > ASOS precedence
-        current_truth = label_current_truth(rec, observations,
-                                            mesonet_obs=mesonet_obs,
-                                            mrms_obs=mrms_obs)
         scored.update(current_truth)
+        source_counts['current'][current_truth.get('truth_source', 'none')] += 1
 
         # Wording score
-        if not obs_window.empty:
-            wording = score_wording(snap, obs_window)
+        if obs_at_time is not None:
+            wording = score_wording(snap, timing_window, obs_at_time=obs_at_time)
             scored['wording_category'] = wording['category']
             scored['wording_detail'] = wording['detail']
             scored['fcst_severity'] = wording.get('fcst_severity')
@@ -153,13 +213,13 @@ def backtest_city(
             wording_results.append(wording)
 
             # Two-axis scoring: presence + intensity
-            pi = score_presence_intensity(snap, obs_window)
+            pi = score_presence_intensity(snap, timing_window, obs_at_time=obs_at_time)
             scored['presence_category'] = pi['presence']
             scored['intensity_category'] = pi['intensity']
             pi_results.append(pi)
 
             # Precip timing
-            se, ee, de = score_precip_timing_nowcast(snap, obs_window)
+            se, ee, de = score_precip_timing_nowcast(snap, timing_window)
             if se is not None:
                 start_errors.append(se)
                 scored['precip_start_error_min'] = round(se, 1)
@@ -171,7 +231,8 @@ def backtest_city(
                 scored['duration_error_min'] = round(de, 1)
 
             # Lightning
-            lr = score_lightning_state(snap, obs_window, [snap])
+            lr = (score_lightning_state(snap, lightning_window, [snap], obs_at_time=lightning_obs)
+                  if lightning_obs is not None else None)
             if lr is not None:
                 lightning_results.append(lr)
                 scored['lightning_obs_thunder'] = lr['obs_thunder']
@@ -183,9 +244,7 @@ def backtest_city(
                 scored['precision_violations'] = len(pvs)
 
             # Icon agreement
-            from src.nowcast_scoring import _obs_nearest, _icon_matches_category
-            obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
-            if obs_at_time is not None and snap.displayed_icon:
+            if snap.displayed_icon:
                 obs_cat = obs_at_time.get('condition_category', 'clear')
                 icon_score = _icon_matches_category(snap.displayed_icon, obs_cat)
                 icon_results.append(icon_score)
@@ -198,8 +257,11 @@ def backtest_city(
         # Lead-target truth labels (MRMS > mesonet > ASOS precedence)
         lead_labels = label_lead_targets(rec, observations,
                                          mesonet_obs=mesonet_obs,
-                                         mrms_obs=mrms_obs)
+                                         mrms_obs=mrms_obs,
+                                         legacy=legacy, max_lag=max_lag)
         scored.update(lead_labels)
+        for m in LEAD_MINUTES:
+            source_counts[f'+{m}'][lead_labels.get(f'truth_source_+{m}', 'none')] += 1
 
         snapshots.append(scored)
 
@@ -213,6 +275,8 @@ def backtest_city(
         icon_results, violations, len(log_records),
         snapshots=snapshots,
     )
+    agg['truth_mode'] = truth_mode
+    agg['truth_source_counts'] = {k: dict(v) for k, v in source_counts.items()}
 
     return {
         'city': city,
@@ -391,6 +455,17 @@ def _build_ml_row(rec: LogRecord, current_truth: dict, lead_labels: dict, scored
         'obs_precip_active': current_truth.get('obs_precip_active'),
         'obs_thunder': current_truth.get('obs_thunder'),
         'obs_condition': current_truth.get('obs_condition'),
+        'truth_source': current_truth.get('truth_source'),
+        'truth_lag_min': current_truth.get('truth_lag_min'),
+
+        # Schema v3 inputs/provenance (None for older records)
+        'radar_sample_status': rec.radar_sample_status,
+        'metar_present_weather': rec.obs_present_weather,
+        'metar_temp_c': rec.obs_temp_c,
+        'metar_dewpoint_c': rec.obs_dewpoint_c,
+        'metar_age_min': rec.obs_age_min,
+        'algo_version': rec.algo_version,
+        'trend_method': rec.trend_method,
 
         # Wording score
         'wording_category': scored.get('wording_category'),
@@ -422,8 +497,15 @@ def export_ml_csv(all_ml_rows: list, output_dir: str):
 
 # ── Report generation ───────────────────────────────────────────────────────
 
-def generate_report(city_results: list, output_dir: str, date_range: tuple) -> str:
-    """Generate weekly report JSON for the viewer."""
+def generate_report(city_results: list, output_dir: str, date_range: tuple,
+                    meta: dict = None, tag: str = None,
+                    include_snapshots: bool = True) -> str:
+    """Generate weekly report JSON for the viewer.
+
+    ``meta``: provenance block (git describe, config, args, truth-source
+    counts, ingest skips). ``tag`` is appended to the filename so runs under
+    different truth modes don't overwrite each other.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     start_str = date_range[0].isoformat()
@@ -432,6 +514,7 @@ def generate_report(city_results: list, output_dir: str, date_range: tuple) -> s
     report = {
         'generated': datetime.now(timezone.utc).isoformat(),
         'period': {'start': start_str, 'end': end_str},
+        'meta': meta or {},
         'cities': [],
     }
 
@@ -440,11 +523,12 @@ def generate_report(city_results: list, output_dir: str, date_range: tuple) -> s
             'city': result['city'],
             'period': result['period'],
             'metrics': result['metrics'],
-            'snapshots': result['snapshots'],
         }
+        if include_snapshots:
+            city_report['snapshots'] = result['snapshots']
         report['cities'].append(city_report)
 
-    fname = f'weekly_{start_str}_{end_str}.json'
+    fname = f'weekly_{start_str}_{end_str}{"_" + tag if tag else ""}.json'
     path = os.path.join(output_dir, fname)
 
     class _Encoder(json.JSONEncoder):
@@ -460,6 +544,56 @@ def generate_report(city_results: list, output_dir: str, date_range: tuple) -> s
 
     logger.info(f'Report -> {path}')
     return path
+
+
+SNAPSHOT_CSV_COLUMNS = [
+    'timestamp', 'location', 'displayed_condition', 'precip_phenomenon',
+    'radar_dbz', 'radar_rain_state', 'radar_sample_status', 'trend_method',
+    'trend_begin_in_min', 'trend_end_in_min', 'trend_confidence',
+    'obs_precip_active', 'obs_condition', 'obs_thunder', 'truth_source', 'truth_lag_min',
+    'wording_category', 'presence_category', 'intensity_category',
+    'precip_start_error_min', 'precip_end_error_min', 'icon_agreement',
+    'lightning_state', 'lightning_obs_thunder',
+] + [f'{k}_+{m}' for m in LEAD_MINUTES
+     for k in ('precip_active', 'thunder_active', 'condition', 'truth_source', 'truth_lag_min')]
+
+
+def export_snapshots_csv(city_results: list, path: str) -> str:
+    """Compact per-snapshot CSV (for old-vs-new truth comparisons)."""
+    rows = [{c: s.get(c) for c in SNAPSHOT_CSV_COLUMNS}
+            for r in city_results for s in r['snapshots']]
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    pd.DataFrame(rows, columns=SNAPSHOT_CSV_COLUMNS).to_csv(path, index=False)
+    logger.info(f'Snapshots CSV ({len(rows)} rows) -> {path}')
+    return path
+
+
+def build_provenance(config: dict, args, truth_mode: str, max_lag: dict,
+                     ingest_stats: dict, city_results: list, extra: dict) -> dict:
+    """Everything needed to tell two reports apart (and reproduce one)."""
+    totals = {}
+    for r in city_results:
+        for key, counts in r['metrics'].get('truth_source_counts', {}).items():
+            bucket = totals.setdefault(key, Counter())
+            bucket.update(counts)
+    rec_versions = Counter()
+    for r in city_results:
+        rec_versions.update(r.get('record_algo_versions', {}))
+    return {
+        'git_describe': git_describe(),
+        'algo_version_tree': algo_version(),
+        'record_algo_versions': dict(rec_versions),
+        'argv': sys.argv,
+        'args': {k: v for k, v in vars(args).items()} if args is not None else {},
+        'config': config,
+        'truth_mode': truth_mode,
+        'truth_max_lag_min': max_lag,
+        'truth_source_counts': {k: dict(v) for k, v in totals.items()},
+        'ingest': ingest_stats,
+        'python': sys.version.split()[0],
+        'pandas': pd.__version__,
+        **extra,
+    }
 
 
 # ── Main pipeline ───────────────────────────────────────────────────────────
@@ -492,6 +626,15 @@ def run_backtest(config: dict, args) -> list:
     mrms_resolved = resolve_wgrib2(mrms_wgrib2_path)
     use_mrms = (cli_mrms or mrms_cfg.get('enabled', False)) and mrms_resolved is not None
     mrms_fetch_cadence_min = mrms_cfg.get('fetch_cadence_min', 10)
+
+    # Truth mode: CLI --truth wins, then config truth.mode, default v2.
+    truth_cfg = config.get('truth', {}) or {}
+    truth_mode = (getattr(args, 'truth', None) or truth_cfg.get('mode') or 'v2')
+    if truth_mode not in ('v2', 'legacy'):
+        raise ValueError(f'unknown truth mode {truth_mode!r} (v2 | legacy)')
+    max_lag = {k: truth_cfg[f'{k}_max_lag_min'] for k in ('asos', 'mesonet', 'mrms')
+               if f'{k}_max_lag_min' in truth_cfg}
+    logger.info('Truth mode: %s%s', truth_mode, f' (max lag {max_lag})' if max_lag else '')
     if cli_mrms and mrms_resolved is None:
         logger.warning('--mrms requested but wgrib2 binary not found; install it or set '
                        'mrms.wgrib2_path in config.yaml; falling back to ASOS/mesonet only')
@@ -537,7 +680,9 @@ def run_backtest(config: dict, args) -> list:
             return []
 
     # Load all logs
-    all_logs = load_jsonl_logs(log_dir, date_range=date_range)
+    ingest_stats = {}
+    all_logs = load_jsonl_logs(log_dir, date_range=date_range, stats=ingest_stats)
+    logger.info('Ingest: %s', {k: v for k, v in ingest_stats.items()})
     if not all_logs:
         logger.warning('No log records found. Is the app logging to server.py?')
         return []
@@ -572,6 +717,19 @@ def run_backtest(config: dict, args) -> list:
     city_results = []
     all_ml_rows = []
 
+    # MRMS: one download per grid for all cities (fetch_mrms_multi), not per city.
+    mrms_by_slug = {}
+    if use_mrms:
+        pts = {c['name'].lower().replace(' ', '_'): (c['lat'], c['lon'])
+               for c in cities if c.get('lat') is not None and c.get('lon') is not None}
+        try:
+            mrms_by_slug = fetch_mrms_multi(pts, start_date, end_date, mrms_cache_dir,
+                                            wgrib2_path=mrms_resolved,
+                                            fetch_cadence_min=mrms_fetch_cadence_min,
+                                            workers=mrms_cfg.get('workers', 3))
+        except Exception as e:
+            logger.warning(f'MRMS fetch failed: {e}')
+
     for city in cities:
         station = city.get('station', '')
         city_name = city['name']
@@ -594,18 +752,25 @@ def run_backtest(config: dict, args) -> list:
         if not state_code and city_logs:
             state_code = next((r.state_code for r in city_logs if r.state_code), None)
 
-        if station:
+        if station and truth_mode == 'legacy':
             observations, obs_station, obs_dist_km = fetch_observations(
                 station, start_date, end_date, obs_cache_dir,
                 lat=lat, lon=lon, state_code=state_code,
             )
+        elif station:
+            raw_obs, obs_station, obs_dist_km = fetch_raw_observations(
+                station, start_date, end_date, obs_cache_dir,
+                lat=lat, lon=lon, state_code=state_code, report_type=RAW_REPORT_TYPE,
+            )
+            observations = metar_frame(raw_obs)
             if obs_station != station:
                 logger.info(
                     f'Fetched {len(observations)} hourly obs via fallback '
                     f'{obs_station} ({obs_dist_km:.1f} km from {city_name})'
                 )
             else:
-                logger.info(f'Fetched {len(observations)} hourly obs for {obs_station}')
+                logger.info(f'Fetched {len(observations)} '
+                            f'{"hourly" if truth_mode == "legacy" else "raw"} obs for {obs_station}')
         else:
             observations, obs_station, obs_dist_km = pd.DataFrame(), '', 0.0
             logger.warning(f'No station for {city_name} — scoring will be limited')
@@ -629,29 +794,21 @@ def run_backtest(config: dict, args) -> list:
             except Exception as e:
                 logger.warning(f'Mesonet fetch failed for {city_name}: {e}')
 
-        # Optional: MRMS truth (wgrib2 + NCEP NOMADS / Iowa State archive).
-        mrms_df = pd.DataFrame()
-        if use_mrms and lat is not None and lon is not None:
-            try:
-                mrms_df = fetch_mrms_observations(
-                    lat, lon, start_date, end_date, mrms_cache_dir,
-                    wgrib2_path=mrms_resolved,
-                    fetch_cadence_min=mrms_fetch_cadence_min,
-                    city_slug=city_name.lower().replace(' ', '_'),
-                )
-                if not mrms_df.empty:
-                    logger.info(f'Fetched {len(mrms_df)} MRMS sample(s) for {city_name}')
-                else:
-                    logger.info(f'No MRMS data for {city_name} window — falling back')
-            except Exception as e:
-                logger.warning(f'MRMS fetch failed for {city_name}: {e}')
+        # Optional: MRMS truth (fetched for all cities above).
+        mrms_df = mrms_by_slug.get(city_name.lower().replace(' ', '_'), pd.DataFrame())
+        if use_mrms:
+            logger.info(f'{len(mrms_df)} MRMS sample(s) for {city_name}')
 
         # Run backtest
         result = backtest_city(
             city, city_logs, observations, config,
             mesonet_obs=mesonet_df if not mesonet_df.empty else None,
             mrms_obs=mrms_df if not mrms_df.empty else None,
+            truth_mode=truth_mode,
+            max_lag=max_lag or None,
         )
+        result['record_algo_versions'] = dict(Counter(r.algo_version or 'unknown(v1/v2)'
+                                                      for r in city_logs))
         result['period']['obs_station'] = obs_station
         result['period']['obs_station_dist_km'] = round(obs_dist_km, 1)
         result['period']['obs_is_fallback'] = obs_station != station
@@ -659,6 +816,7 @@ def run_backtest(config: dict, args) -> list:
         result['period']['mesonet_buckets'] = int(len(mesonet_df))
         result['period']['mrms_enabled'] = bool(use_mrms and not mrms_df.empty)
         result['period']['mrms_samples'] = int(len(mrms_df))
+        result['period']['asos_obs_rows'] = int(len(observations))
         city_results.append(result)
         all_ml_rows.extend(result['ml_rows'])
 
@@ -672,8 +830,23 @@ def run_backtest(config: dict, args) -> list:
 
     # Generate report
     if city_results:
-        report_path = generate_report(city_results, report_dir, date_range)
+        meta = build_provenance(config, args, truth_mode, max_lag, ingest_stats, city_results, {
+            'mrms_enabled': bool(use_mrms),
+            'mrms_wgrib2': mrms_resolved,
+            'mrms_fetch_cadence_min': mrms_fetch_cadence_min if use_mrms else None,
+            'mesonet_enabled': bool(use_mesonet),
+            'obs_report_type': RAW_REPORT_TYPE if truth_mode == 'v2' else '3,4',
+        })
+        if getattr(args, 'report_dir', None):
+            report_dir = args.report_dir
+        tag = getattr(args, 'report_tag', None)
+        if tag is None and truth_mode == 'v2':
+            tag = 'truth-v2' + ('-mrms' if use_mrms else '')
+        report_path = generate_report(city_results, report_dir, date_range, meta=meta, tag=tag,
+                                      include_snapshots=not getattr(args, 'summary_only', False))
         logger.info(f'\nReport saved: {report_path}')
+        if getattr(args, 'snapshots_csv', None):
+            export_snapshots_csv(city_results, args.snapshots_csv)
 
     # Export ML CSV
     if (hasattr(args, 'export_ml') and args.export_ml) and all_ml_rows:
@@ -769,6 +942,17 @@ def main():
                         help='Augment ASOS truth with MRMS quantitative precipitation '
                              '(NCEP NOMADS + Iowa State archive; requires wgrib2 on PATH '
                              'or mrms.wgrib2_path set in config.yaml)')
+    parser.add_argument('--truth', choices=['v2', 'legacy'], default=None,
+                        help='Truth labeling: v2 = raw 5-min/special obs, one-sided match '
+                             '(default); legacy = pre-2026-10-25 hourly buckets')
+    parser.add_argument('--report-dir', type=str, default=None,
+                        help='Write the report JSON here instead of backtest.report_dir')
+    parser.add_argument('--report-tag', type=str, default=None,
+                        help='Filename suffix for the report (default: truth-v2[-mrms] in v2 mode)')
+    parser.add_argument('--summary-only', action='store_true',
+                        help='Leave per-snapshot rows out of the report JSON')
+    parser.add_argument('--snapshots-csv', type=str, default=None,
+                        help='Also write a compact per-snapshot CSV to this path')
     parser.add_argument('--config', type=str,
                         default=str(Path(__file__).parent / 'config.yaml'),
                         help='Path to config.yaml')

@@ -127,7 +127,7 @@ def test_falls_back_to_mesonet_when_mrms_too_far():
         'has_thunder': False, 'condition_category': 'clear',
     }])
     meso = _make_obs_df([{
-        'time_utc': '2026-05-17T12:09Z', 'precip_in': 0.05,
+        'time_utc': '2026-05-17T12:12Z', 'precip_in': 0.05,
         'has_thunder': False, 'condition_category': 'rain',
     }])
     # MRMS reading 30 min away from any +N target — well outside the 4-min tolerance
@@ -163,7 +163,7 @@ def test_current_truth_mrms_precedence():
     """label_current_truth also respects the precedence chain."""
     snap = _FakeRecord(timestamp=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc))
     mrms = _make_obs_df([{
-        'time_utc': '2026-05-17T11:58Z', 'precip_in': 0.20,
+        'time_utc': '2026-05-17T12:02Z', 'precip_in': 0.20,
         'has_thunder': False, 'condition_category': 'rain',
     }])
     out = label_current_truth(snap, pd.DataFrame(), mrms_obs=mrms)

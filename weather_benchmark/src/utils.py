@@ -142,14 +142,26 @@ def wmo_to_category(code) -> str:
     return WMO_CATEGORY_MAP.get(code, 'clear')
 
 
-def metar_wx_to_category(wxcodes: str, sky_cover: str = None) -> str:
+def metar_wx_to_category(wxcodes: str, sky_cover: str = None,
+                         legacy: bool = True) -> str:
     """
     Map IEM ASOS wxcodes string to a condition category.
     Falls back to sky_cover if no weather is reported.
+
+    ``legacy=False`` (truth v2) fixes light rain: the word-boundary RA pattern also
+    matches "-RA" ('-' is not a word char), so the dedicated ``-RA`` → light
+    rule was unreachable and every -RA / -SHRA obs scored as moderate 'rain'
+    — inflating "intensity understated". v2 maps rain whose RA groups are all
+    light-prefixed to the light tier ('drizzle', same severity as "Light
+    Rain"). The legacy mapping is kept for reproducing old reports.
     """
     if wxcodes and wxcodes.strip():
         for rx, cat in _METAR_WX_PATTERNS:
             if rx.search(wxcodes):
+                if not legacy and cat == 'rain':
+                    ra = [t for t in wxcodes.upper().split() if 'RA' in t and not t.startswith('VC')]
+                    if ra and all(t.startswith('-') for t in ra):
+                        return 'drizzle'
                 return cat
     # No significant weather — use sky cover
     if sky_cover:

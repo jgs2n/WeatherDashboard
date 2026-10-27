@@ -37,14 +37,14 @@ function _acRender() {
         `;
         return;
     }
-    const now   = new Date();
+    const now   = omLocalNow();   // compared against Open-Meteo local times
     const stats = _acStats(_acData, now);
     const { times, values } = _acSlice(_acData, _acRange, now);
     const cat   = getAQICategory(stats.current);
 
     let updatedStr = '';
     if (lastRefreshTime) {
-        const mins = Math.round((now - lastRefreshTime) / 60000);
+        const mins = Math.round((Date.now() - lastRefreshTime) / 60000);
         updatedStr = mins <= 1 ? 'just now' : `${mins} min ago`;
     }
 

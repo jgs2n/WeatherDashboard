@@ -2,15 +2,26 @@
 
 All IEM calls are gated through the shared token-bucket rate limiter to avoid
 429s. Each fetcher has its own retry-with-backoff for transient failures.
+
+IEM ASOS and Open-Meteo go through ``_SESSION`` (urllib3 Retry on connection
+errors and 429/5xx). When a fetch still fails, the last good response for the
+same station / point is reused if it is <= ``STALE_FALLBACK_MAX_SEC`` old; the
+returned dict then carries ``_stale = {'ageMin': ..}`` so the record can be
+marked (record_builder ``_staleSources``). Per-source ok/fail/stale counts live
+in ``SOURCE_STATS`` for the collector heartbeat.
 """
 
+import copy
 import io
+import threading
 import time
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from PIL import Image
 
 from .rate_limiter import TokenBucket
@@ -21,6 +32,64 @@ IEM_TILE_BASE = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0'
 IEM_ASOS_URL  = 'https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py'
 OM_FORECAST   = 'https://api.open-meteo.com/v1/forecast'
 RAINVIEWER_MAPS = 'https://api.rainviewer.com/public/weather-maps.json'
+
+# Shared by all city workers (requests.Session is safe for concurrent GETs).
+# backoff_factor=1 -> sleeps of ~1, 2, 4 s between attempts, which also keeps
+# ASOS retries near IEM's ~1 req/s budget. raise_on_status=False hands the
+# final 429/5xx back so raise_for_status() reports it.
+_RETRY = Retry(total=3, backoff_factor=1,
+               status_forcelist=[429, 500, 502, 503, 504],
+               allowed_methods=frozenset(['GET']),
+               raise_on_status=False)
+_SESSION = requests.Session()
+_SESSION.mount('https://', HTTPAdapter(max_retries=_RETRY, pool_maxsize=16))
+_SESSION.mount('http://', HTTPAdapter(max_retries=_RETRY, pool_maxsize=16))
+
+STALE_FALLBACK_MAX_SEC = 60 * 60
+_last_good = {}            # cache key -> (response dict, time.time() when fetched)
+_last_good_lock = threading.Lock()
+
+SOURCE_STATS = {}          # source -> {'ok','fail','stale','lastOkUtc','lastFailUtc'}
+_stats_lock = threading.Lock()
+
+
+def _count(source: str, outcome: str) -> None:
+    """outcome: 'ok' | 'fail' | 'stale' (a failure served from the stale cache)."""
+    now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    with _stats_lock:
+        st = SOURCE_STATS.setdefault(source, {'ok': 0, 'fail': 0, 'stale': 0,
+                                              'lastOkUtc': None, 'lastFailUtc': None})
+        st[outcome] += 1
+        if outcome == 'ok':
+            st['lastOkUtc'] = now
+        else:
+            st['lastFailUtc'] = now
+
+
+def source_stats_snapshot() -> dict:
+    with _stats_lock:
+        return copy.deepcopy(SOURCE_STATS)
+
+
+def _remember(key, value: dict) -> None:
+    with _last_good_lock:
+        _last_good[key] = (value, time.time())
+
+
+def _stale_fallback(source: str, key) -> Optional[dict]:
+    """Last good response for ``key`` if young enough, tagged ``_stale``."""
+    with _last_good_lock:
+        hit = _last_good.get(key)
+    if hit:
+        age = time.time() - hit[1]
+        if age <= STALE_FALLBACK_MAX_SEC:
+            _count(source, 'stale')
+            out = dict(hit[0])
+            out['_stale'] = {'ageMin': round(age / 60.0, 1)}
+            return out
+    _count(source, 'fail')
+    return None
+
 
 _rv_maps_cache = {'data': None, 'ts': 0.0}
 _RV_MAPS_TTL_SEC = 5 * 60
@@ -45,11 +114,14 @@ def fetch_iem_tile(timestamp: str, z: int, x: int, y: int,
                 time.sleep(wait)
                 continue
             r.raise_for_status()
-            return Image.open(io.BytesIO(r.content)).convert('RGBA')
+            img = Image.open(io.BytesIO(r.content)).convert('RGBA')
+            _count('iem_tile', 'ok')
+            return img
         except Exception as e:
             logger.debug('IEM tile %s/%s/%s @ %s failed: %s',
                          z, x, y, timestamp, e)
             time.sleep(1.0)
+    _count('iem_tile', 'fail')
     return None
 
 
@@ -100,9 +172,10 @@ def fetch_iem_latest_metar(station: str, limiter: TokenBucket) -> Optional[dict]
     Returns a dict with stationId + obs subfields shaped like the browser's
     ``fetchStationObservation`` output, or None if unavailable.
     """
+    key = ('iem_asos', station)
     if not limiter.acquire():
         logger.warning('Rate limiter timeout for IEM ASOS %s', station)
-        return None
+        return _stale_fallback('iem_asos', key)
     # IEM ASOS endpoint — pull last 90 min, take the freshest row
     now = datetime.now(timezone.utc)
     start = now - timedelta(minutes=90)
@@ -122,17 +195,20 @@ def fetch_iem_latest_metar(station: str, limiter: TokenBucket) -> Optional[dict]
         'report_type': '3,4',
     }
     try:
-        r = requests.get(IEM_ASOS_URL, params=params, timeout=15)
+        r = _SESSION.get(IEM_ASOS_URL, params=params, timeout=15)
         if r.status_code == 429:
-            logger.warning('IEM ASOS rate-limited for %s', station)
-            return None
+            logger.warning('IEM ASOS rate-limited for %s (after retries)', station)
+            return _stale_fallback('iem_asos', key)
         r.raise_for_status()
     except Exception as e:
         logger.warning('IEM ASOS fetch failed for %s: %s', station, e)
-        return None
+        return _stale_fallback('iem_asos', key)
 
     lines = [ln for ln in r.text.strip().split('\n') if ln and not ln.startswith('#')]
     if len(lines) < 2:
+        # Reachable but no METAR in the last 90 min: a real answer, not a
+        # transport failure, so no stale fallback.
+        _count('iem_asos', 'ok')
         return None
     header = lines[0].split(',')
     rows = [ln.split(',') for ln in lines[1:]]
@@ -142,7 +218,10 @@ def fetch_iem_latest_metar(station: str, limiter: TokenBucket) -> Optional[dict]
     obs = dict(zip(header, last))
 
     # Normalize into the shape the JS uses
-    return _normalize_metar(station, obs)
+    result = _normalize_metar(station, obs)
+    _count('iem_asos', 'ok')
+    _remember(key, result)
+    return result
 
 
 def _normalize_metar(station: str, row: dict) -> dict:
@@ -220,13 +299,17 @@ def fetch_open_meteo(lat: float, lon: float, want_hourly: bool = False) -> Optio
         params['forecast_minutely_15'] = 8
         params['forecast_days'] = 1
 
+    key = ('open_meteo', lat, lon, bool(want_hourly))
     try:
-        r = requests.get(OM_FORECAST, params=params, timeout=15)
+        r = _SESSION.get(OM_FORECAST, params=params, timeout=15)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
     except Exception as e:
         logger.warning('Open-Meteo fetch failed for (%s, %s): %s', lat, lon, e)
-        return None
+        return _stale_fallback('open_meteo', key)
+    _count('open_meteo', 'ok')
+    _remember(key, data)
+    return data
 
 
 def extract_model_context(om_response: dict) -> Optional[dict]:

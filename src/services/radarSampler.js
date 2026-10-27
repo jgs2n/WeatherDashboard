@@ -318,13 +318,24 @@ async function _fetchRainViewerMaps() {
 
 // ── Sample a single frame at a point ─────────────────────────────────────────
 
+// radar sampleStatus values (parity: SAMPLE_* in collector_lib/radar_sampler.py).
+// dbz === null alone is ambiguous between "no echo" and "tile fetch failed";
+// only a real no-echo frame may age the rain hysteresis toward OFF.
+const SAMPLE_STATUS = Object.freeze({ OK: 'ok', NO_ECHO: 'no_echo', FETCH_FAILED: 'fetch_failed' });
+
 async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
+    return (await _sampleFrameAtPointStatus(lat, lon, isUS, frameInfo)).dbz;
+}
+
+// { dbz, status }. fetch_failed = the point's own tile could not be fetched or
+// decoded; a failed edge-neighbor tile only means that fallback was unavailable.
+async function _sampleFrameAtPointStatus(lat, lon, isUS, frameInfo) {
     const { tileX, tileY, pxX, pxY } = _latLonToTile(lat, lon, RADAR_CFG.ZOOM);
 
     const url = _frameUrl(isUS, frameInfo, tileX, tileY);
-    if (!url) return null;
+    if (!url) return { dbz: null, status: SAMPLE_STATUS.FETCH_FAILED };
     const imgData = await _getTileImageData(url);
-    if (!imgData) return null;
+    if (!imgData) return { dbz: null, status: SAMPLE_STATUS.FETCH_FAILED };
 
     const r = RADAR_CFG.NEIGHBORHOOD_RADIUS;
     const decoder = frameInfo.rvRaw ? _rvRawToDbz : _colorToDBZ;
@@ -345,7 +356,7 @@ async function _sampleFrameAtPoint(lat, lon, isUS, frameInfo) {
         }
     }
 
-    return dbz;
+    return { dbz, status: dbz !== null ? SAMPLE_STATUS.OK : SAMPLE_STATUS.NO_ECHO };
 }
 
 // ── Latest frame lookup (shared by sampler, motion, upstream) ────────────────
@@ -468,9 +479,9 @@ async function loadRadarHistory(lat, lon, isUS) {
                 const stamps = _iemTimestamps(RADAR_CFG.FRAME_COUNT);
                 // Fetch oldest first so hysteresis processes in chronological order
                 for (const s of stamps.reverse()) {
-                    const dbz = await _sampleFrameAtPoint(lat, lon, true, { iemTs: s.ts });
-                    frames.push({ timestamp: s.time, dbz, source: 'NEXRAD' });
-                    _processFrame(s.time, dbz);
+                    const { dbz, status } = await _sampleFrameAtPointStatus(lat, lon, true, { iemTs: s.ts });
+                    frames.push({ timestamp: s.time, dbz, source: 'NEXRAD', status });
+                    if (status !== SAMPLE_STATUS.FETCH_FAILED) _processFrame(s.time, dbz);
                 }
             } else {
                 // RainViewer: get frame list from API
@@ -478,11 +489,11 @@ async function loadRadarHistory(lat, lon, isUS) {
                 if (maps && maps.radar && maps.radar.past) {
                     const pastFrames = maps.radar.past.slice(-RADAR_CFG.FRAME_COUNT);
                     for (const f of pastFrames) {
-                        const dbz = await _sampleFrameAtPoint(lat, lon, false, {
+                        const { dbz, status } = await _sampleFrameAtPointStatus(lat, lon, false, {
                             rvHost: maps.host, rvPath: f.path
                         });
-                        frames.push({ timestamp: f.time, dbz, source: 'RainViewer' });
-                        _processFrame(f.time, dbz);
+                        frames.push({ timestamp: f.time, dbz, source: 'RainViewer', status });
+                        if (status !== SAMPLE_STATUS.FETCH_FAILED) _processFrame(f.time, dbz);
                     }
                 }
             }
@@ -506,24 +517,25 @@ async function sampleRadarAtPoint(lat, lon, isUS) {
     }
 
     let dbz = null;
+    let status = SAMPLE_STATUS.FETCH_FAILED;   // until a frame is actually read
     let timestamp = Date.now() / 1000;
     let source = isUS ? 'NEXRAD' : 'RainViewer';
 
     try {
         const latest = await _latestFrameInfo(isUS);
         if (latest) {
-            dbz = await _sampleFrameAtPoint(lat, lon, isUS, latest.frameInfo);
+            ({ dbz, status } = await _sampleFrameAtPointStatus(lat, lon, isUS, latest.frameInfo));
             timestamp = latest.timestamp;
         }
     } catch (err) {
         console.warn('[RadarSampler] Sample failed:', err.message);
     }
 
-    // Update hysteresis
-    _processFrame(timestamp, dbz);
+    // Update hysteresis — but a failed fetch is not evidence of "no rain"
+    if (status !== SAMPLE_STATUS.FETCH_FAILED) _processFrame(timestamp, dbz);
 
     // Append to frame history (limit to FRAME_COUNT)
-    _radarFrames.push({ timestamp, dbz, source });
+    _radarFrames.push({ timestamp, dbz, source, status });
     if (_radarFrames.length > RADAR_CFG.FRAME_COUNT) {
         _radarFrames = _radarFrames.slice(-RADAR_CFG.FRAME_COUNT);
     }
@@ -536,6 +548,7 @@ async function sampleRadarAtPoint(lat, lon, isUS) {
         rainState: _rainState,
         timestamp: new Date(timestamp * 1000).toISOString(),
         source,
+        sampleStatus: status,
         lastValidDbzTime: _lastValidDbzTime ? new Date(_lastValidDbzTime).toISOString() : null,
     };
 }

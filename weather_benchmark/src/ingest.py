@@ -158,6 +158,28 @@ class LogRecord:
     # Model hourly forecast (next 12h)
     model_hourly: Optional[list] = None
 
+    # Trend method ('edge' | 'slope' | 'om15' | 'consensus' | ... | 'none')
+    trend_method: Optional[str] = None
+
+    # Schema v3: radar sample status (ok | no_echo | fetch_failed; None = v2)
+    radar_sample_status: Optional[str] = None
+
+    # Schema v3: the METAR the algorithm consumed (None for v1/v2 records)
+    obs_station: Optional[str] = None
+    obs_time: Optional[str] = None
+    obs_age_min: Optional[float] = None
+    obs_present_weather: Optional[str] = None
+    obs_temp_c: Optional[float] = None
+    obs_dewpoint_c: Optional[float] = None
+    obs_humidity: Optional[float] = None
+    obs_visibility_mi: Optional[float] = None
+    obs_precip_1h_in: Optional[float] = None
+    obs_raw: Optional[str] = None
+
+    # Schema v3: code provenance
+    algo_version: Optional[str] = None
+    git_sha: Optional[str] = None
+
     # Metadata
     schema_version: int = 1
     validation_flags: Optional[list] = None
@@ -527,6 +549,7 @@ def _parse_one_log_record(data: dict, source_file: str) -> LogRecord:
     trend = data.get('trend') or {}
     radar = data.get('radar') or {}
     model = data.get('model') or {}
+    obs = data.get('obs') or {}       # schema v3+
 
     return LogRecord(
         timestamp=_parse_iso(data.get('timestamp', '')),
@@ -583,6 +606,23 @@ def _parse_one_log_record(data: dict, source_file: str) -> LogRecord:
 
         model_hourly=data.get('modelHourly'),
 
+        trend_method=trend.get('method'),
+        radar_sample_status=radar.get('sampleStatus'),
+
+        obs_station=obs.get('stationId'),
+        obs_time=obs.get('timestamp'),
+        obs_age_min=obs.get('ageMin'),
+        obs_present_weather=obs.get('presentWeather'),
+        obs_temp_c=obs.get('tempC'),
+        obs_dewpoint_c=obs.get('dewpointC'),
+        obs_humidity=obs.get('humidity'),
+        obs_visibility_mi=obs.get('visibilityMi'),
+        obs_precip_1h_in=obs.get('precip1hIn'),
+        obs_raw=obs.get('raw'),
+
+        algo_version=data.get('algoVersion'),
+        git_sha=data.get('gitSha'),
+
         schema_version=data.get('_schemaVersion', 1),
         validation_flags=data.get('_validationFlags'),
         source_file=source_file,
@@ -594,6 +634,7 @@ def load_jsonl_logs(
     date_range: tuple = None,
     location: str = None,
     station: str = None,
+    stats: dict = None,
 ) -> list:
     """
     Load JSONL log records from the nowcastLogger output directory.
@@ -603,11 +644,18 @@ def load_jsonl_logs(
         date_range: Optional (start_date, end_date) to filter
         location: Optional location name substring to filter
         station: Optional station ID to filter
+        stats: Optional dict filled with load bookkeeping: files_read,
+               lines_read, skipped_lines (unparseable), test_records,
+               schema_versions {version: count}
 
     Returns:
         List of LogRecord sorted by timestamp
     """
     records = []
+    if stats is None:
+        stats = {}
+    stats.update({'files_read': 0, 'lines_read': 0, 'skipped_lines': 0,
+                  'test_records': 0, 'schema_versions': {}})
     if not os.path.isdir(log_dir):
         logger.warning(f'Log directory not found: {log_dir}')
         return records
@@ -648,18 +696,24 @@ def load_jsonl_logs(
                 pass  # Non-date filename, load anyway
         try:
             with open(path, 'r', encoding='utf-8') as f:
+                stats['files_read'] += 1
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     if not line:
                         continue
+                    stats['lines_read'] += 1
                     try:
                         data = json.loads(line)
                         # Skip test records
                         if data.get('test'):
+                            stats['test_records'] += 1
                             continue
                         rec = _parse_one_log_record(data, f'{path}:{line_num}')
                         records.append(rec)
+                        sv = str(rec.schema_version)
+                        stats['schema_versions'][sv] = stats['schema_versions'].get(sv, 0) + 1
                     except Exception as e:
+                        stats['skipped_lines'] += 1
                         logger.debug(f'Skip line {line_num} in {fname}: {e}')
         except Exception as e:
             logger.warning(f'Failed to read {path}: {e}')

@@ -47,6 +47,23 @@ scoring:
   min_samples_for_weakness: 10
   timing_match_window_hours: 6      # max hours to match rain start/stop events
 
+# Truth labeling (src/lead_targets.py). v2 = raw 5-min/special ASOS obs,
+# one-sided match (first obs at/after the target, within max lag). legacy =
+# pre-2026-10-25 hourly buckets + two-sided nearest (comparisons only).
+# CLI --truth wins.
+truth:
+  mode: v2
+  asos_max_lag_min: 20
+  mrms_max_lag_min: 10          # = mrms.fetch_cadence_min
+  mesonet_max_lag_min: 15
+
+# MRMS truth (backtest --mrms). Needs wgrib2; see COLLECTOR.md.
+mrms:
+  enabled: false
+  wgrib2_path: null             # null = auto-detect (PATH, <repo>/wgrib/wgrib2.exe)
+  fetch_cadence_min: 10
+  workers: 4                    # parallel grid downloads (one grid serves all cities)
+
 # Nowcast scoring
 nowcast_scoring:
   enabled: true

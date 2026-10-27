@@ -276,12 +276,17 @@ def _find_precip_transition(obs: pd.DataFrame, dry_to_wet: bool, after=None):
             after_ts = after_ts.tz_convert('UTC')
         obs_sorted = obs_sorted[obs_sorted['time_utc'] >= after_ts]
 
-    precip_vals = obs_sorted['precip_in'].fillna(0).values
+    # Truth v2 frames carry a per-observation precip_active flag (present
+    # weather / MRMS rate); legacy hourly frames only have p01i accumulation.
+    if 'precip_active' in obs_sorted.columns:
+        wet = obs_sorted['precip_active'].fillna(False).astype(bool).values
+    else:
+        wet = obs_sorted['precip_in'].fillna(0).values > 0.01
     times = obs_sorted['time_utc'].values
 
-    for i in range(1, len(precip_vals)):
-        was_dry = precip_vals[i-1] <= 0.01
-        is_wet = precip_vals[i] > 0.01
+    for i in range(1, len(wet)):
+        was_dry = not wet[i-1]
+        is_wet = wet[i]
         if dry_to_wet and was_dry and is_wet:
             ts = pd.Timestamp(times[i])
             return ts if ts.tz else ts.tz_localize('UTC')
@@ -317,12 +322,17 @@ _CAT_SEVERITY = {
 }
 
 
-def score_wording(snap: NowcastSnapshot, obs_window: pd.DataFrame) -> dict:
+def score_wording(snap: NowcastSnapshot, obs_window: pd.DataFrame,
+                  obs_at_time: dict = None) -> dict:
     """
     Classify the displayed condition wording as:
       correct, overstated, understated, or imprecise.
+
+    ``obs_at_time`` (truth v2) supplies the matched truth row directly;
+    otherwise the legacy two-sided nearest row of ``obs_window`` is used.
     """
-    obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
+    if obs_at_time is None:
+        obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
     if obs_at_time is None:
         return {'category': 'correct', 'detail': 'no obs to compare'}
 
@@ -381,7 +391,8 @@ def score_wording(snap: NowcastSnapshot, obs_window: pd.DataFrame) -> dict:
     }
 
 
-def score_presence_intensity(snap: NowcastSnapshot, obs_window: pd.DataFrame) -> dict:
+def score_presence_intensity(snap: NowcastSnapshot, obs_window: pd.DataFrame,
+                             obs_at_time: dict = None) -> dict:
     """
     Two-axis scoring:
       - presence: did we correctly detect whether precip was occurring?
@@ -391,8 +402,11 @@ def score_presence_intensity(snap: NowcastSnapshot, obs_window: pd.DataFrame) ->
 
     presence values: 'correct' | 'false_alarm' | 'miss' | None (no obs)
     intensity values: 'correct' | 'overstated' | 'understated' | None (not applicable)
+
+    ``obs_at_time``: optional pre-matched truth row (truth v2).
     """
-    obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
+    if obs_at_time is None:
+        obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
     if obs_at_time is None:
         return {'presence': None, 'intensity': None, 'detail': 'no obs'}
 
@@ -526,13 +540,18 @@ def score_lightning_state(
     snap: NowcastSnapshot,
     obs_window: pd.DataFrame,
     all_nowcasts: list,
+    obs_at_time: dict = None,
 ) -> dict:
-    """Score lightning state against observed thunder."""
-    obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
+    """Score lightning state against observed thunder.
+
+    ``obs_at_time``: optional pre-matched truth row (truth v2).
+    """
+    if obs_at_time is None:
+        obs_at_time = _obs_nearest(obs_window, snap.snapshot_time)
     if obs_at_time is None:
         return None
 
-    obs_thunder = obs_at_time.get('has_thunder', False)
+    obs_thunder = bool(obs_at_time.get('has_thunder', False))
 
     result = {
         'snapshot_time': str(snap.snapshot_time),

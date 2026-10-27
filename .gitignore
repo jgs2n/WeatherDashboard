@@ -7,8 +7,9 @@ weather_benchmark/data/
 # To keep a specific report anyway: git add -f weather_benchmark/reports/<file>
 weather_benchmark/reports/
 
-# Collector console logs — appended to forever by run_collector.cmd
+# Collector logs (collector.log rotates to .1-.5; collector.out.log to .1)
 weather_benchmark/*.log
+weather_benchmark/*.log.[0-9]*
 
 # Vendored wgrib2 binaries
 wgrib/

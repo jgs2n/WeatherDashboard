@@ -40,7 +40,19 @@ schema_version: 2
 
 # Logging
 log_level: INFO                 # DEBUG | INFO | WARNING | ERROR
-metrics_interval_sec: 300       # Print rolling stats every N seconds
+metrics_interval_sec: 300       # Print rolling stats + write data/heartbeat.json every N seconds
+log_max_mb: 10                  # collector.log rotation size (with --log-file)
+log_backups: 5                  # collector.log.1 .. .5 kept
+
+# Health alerts (health_check.py --alert, run by the "WeatherHQ Health Alert" task)
+alerts:
+  stale_after_min: 15           # alert when any city's newest record is older
+  repeat_hours: 3               # re-alert while the problem lasts
+  # Phone push via https://ntfy.sh: install the ntfy app and subscribe to the
+  # same topic. Anyone who knows the topic name can read it, so pick a long
+  # random one. Env var WEATHERHQ_NTFY_TOPIC overrides this.
+  ntfy_topic: ''
+  ntfy_server: https://ntfy.sh
 
 # Shutdown
 graceful_shutdown_sec: 30       # Max wait for in-flight polls on SIGTERM

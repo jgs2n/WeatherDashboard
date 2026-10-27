@@ -4,9 +4,31 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.6';
+const APP_VERSION = '0.9.7';
 
 const CHANGELOG = [
+    {
+        version: '0.9.7',
+        date: '2026-10-25',
+        features: [
+            {
+                title: 'Saved Cities No Longer Disturb the Current Nowcast',
+                desc: 'Every five minutes the app refreshed the temperature on each saved-city tab by running a full nowcast for that city, which reset the radar and lightning tracking of the city you were looking at. The tabs now use the forecast icon for other cities, skip the current city, and pause while the app is in the background. Switching, adding, removing or refreshing a city also now fully cancels the old city\u2019s loading, so a slow response can no longer paint, save or start lightning tracking for a city you already left.'
+            },
+            {
+                title: 'Lightning Polling and Health Fixes',
+                desc: 'Refreshing could start a second lightning poll loop alongside the first; now only one ever runs, and it pauses while the app is hidden. The "connected" signal now means the satellite feed actually answered recently (it used to stay on through errors), and the false "Lightning data unavailable" note that appeared in heavy rain after a storm had moved away is gone. The lightning data reader now also loads correctly on the hosted site.'
+            },
+            {
+                title: 'NWS Alerts Are More Reliable',
+                desc: 'Alerts no longer disappear when the NWS forecast request fails, show "Alerts unavailable" instead of "None" when they could not be fetched, drop warnings that have already ended, and refresh every five minutes and whenever you return to the app.'
+            },
+            {
+                title: 'Correct "Now" for Cities in Other Time Zones',
+                desc: 'When viewing a city in a different time zone from your device, the hourly strip, pressure and air-quality charts, rain totals and the forecast start day used your device clock to decide which hour is "now". They now use the city\u2019s own clock.'
+            },
+        ],
+    },
     {
         version: '0.9.6',
         date: '2026-09-06',

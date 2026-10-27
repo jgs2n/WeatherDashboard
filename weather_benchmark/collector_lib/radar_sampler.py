@@ -79,6 +79,12 @@ _INTENSITY_CLASSES = [
 
 # ── Tile math (slippy map) ───────────────────────────────────────────────────
 
+# radar.sampleStatus values (parity: SAMPLE_STATUS in radarSampler.js)
+SAMPLE_OK = 'ok'
+SAMPLE_NO_ECHO = 'no_echo'
+SAMPLE_FETCH_FAILED = 'fetch_failed'
+
+
 def _lat_lon_to_tile(lat: float, lon: float, zoom: int):
     n = 2 ** zoom
     tile_x = int((lon + 180.0) / 360.0 * n)
@@ -221,10 +227,14 @@ class RadarSampler:
             return None
         ts_str, ts_unix = stamps[0]
 
-        dbz = self._sample_frame(ts_unix, ts_str)
-        self._process_frame(ts_unix, dbz)
+        dbz, status = self._sample_frame_status(self.lat, self.lon, ts_str)
+        # A failed tile fetch says nothing about the weather — don't let it
+        # age the hysteresis toward OFF the way a real no-echo frame does.
+        if status != SAMPLE_FETCH_FAILED:
+            self._process_frame(ts_unix, dbz)
 
-        self._frames.append({'timestamp': ts_unix, 'dbz': dbz, 'source': 'NEXRAD'})
+        self._frames.append({'timestamp': ts_unix, 'dbz': dbz, 'source': 'NEXRAD',
+                             'status': status})
         if len(self._frames) > RADAR_CFG['FRAME_COUNT']:
             self._frames = self._frames[-RADAR_CFG['FRAME_COUNT']:]
 
@@ -235,6 +245,7 @@ class RadarSampler:
             'rainState': self._rain_state,
             'timestamp': datetime.fromtimestamp(ts_unix, timezone.utc).isoformat(),
             'source': 'NEXRAD',
+            'sampleStatus': status,
             'lastValidDbzTime': (datetime.fromtimestamp(self._last_valid_dbz_time / 1000, timezone.utc).isoformat()
                                  if self._last_valid_dbz_time else None),
         }
@@ -512,9 +523,11 @@ class RadarSampler:
     def _load_history(self):
         stamps = list(reversed(_iem_timestamps(RADAR_CFG['FRAME_COUNT'])))
         for ts_str, ts_unix in stamps:
-            dbz = self._sample_frame(ts_unix, ts_str)
-            self._frames.append({'timestamp': ts_unix, 'dbz': dbz, 'source': 'NEXRAD'})
-            self._process_frame(ts_unix, dbz)
+            dbz, status = self._sample_frame_status(self.lat, self.lon, ts_str)
+            self._frames.append({'timestamp': ts_unix, 'dbz': dbz, 'source': 'NEXRAD',
+                                 'status': status})
+            if status != SAMPLE_FETCH_FAILED:
+                self._process_frame(ts_unix, dbz)
         self._history_loaded = True
 
     def _sample_frame(self, ts_unix: int, ts_str: str) -> Optional[int]:
@@ -530,10 +543,17 @@ class RadarSampler:
         return img
 
     def _sample_frame_at(self, lat: float, lon: float, ts_str: str) -> Optional[int]:
+        return self._sample_frame_status(lat, lon, ts_str)[0]
+
+    def _sample_frame_status(self, lat: float, lon: float, ts_str: str):
+        """(dbz, status) — status is ok | no_echo | fetch_failed. Mirrors
+        _sampleFrameAtPointStatus (JS). fetch_failed = the point's own tile
+        could not be fetched/decoded; a failed edge-neighbor tile only means
+        that fallback was unavailable, so the frame stays no_echo."""
         tile_x, tile_y, px_x, px_y = _lat_lon_to_tile(lat, lon, RADAR_CFG['ZOOM'])
         img = self._get_tile(ts_str, RADAR_CFG['ZOOM'], tile_x, tile_y)
         if img is None:
-            return None
+            return None, SAMPLE_FETCH_FAILED
         r = RADAR_CFG['NEIGHBORHOOD_RADIUS']
         dbz = _sample_neighborhood(img, px_x, px_y, r)
 
@@ -554,7 +574,7 @@ class RadarSampler:
                         n_py = (tile - 1 - r if px_y < margin
                                 else r if px_y > tile - margin else px_y)
                         dbz = _sample_neighborhood(n_img, n_px, n_py, r)
-        return dbz
+        return dbz, (SAMPLE_OK if dbz is not None else SAMPLE_NO_ECHO)
 
     def _process_frame(self, ts_unix: int, dbz: Optional[int],
                        now_ms: Optional[float] = None):

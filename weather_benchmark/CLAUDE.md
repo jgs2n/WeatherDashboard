@@ -151,6 +151,47 @@ the benchmark.
 
 ---
 
+### [2026-10-25] Truth v2 — trustworthy labels + input provenance (no algorithm threshold change)
+
+**Problem:** the 2026-10-24 review's tuning targets (25–27 dBZ FA, om15 late bias, 38% intensity
+understated) rested on unreliable truth: hourly-floored ASOS buckets with wx-code union + two-sided
+nearest matching leaked up to ~59 min of future weather into "current" truth and made +10/+20/+30
+labels near-copies; the IEM cache reused partial current-day files forever (local `date.today()`,
+key without report_type/fields); MRMS archive URL 404'd; `-RA` was graded moderate (`\bRA\b`
+matched it first); radar tile-fetch failures were logged as "no echo" and decayed the rain state;
+records carried no METAR inputs or code version.
+
+**Changes:**
+- `src/observations.py`: `fetch_raw_observations` (IEM report_type `1,3,4` — the 5-min feed carries
+  wx codes again) + `metar_frame` (one row per obs, precip/thunder from that obs). Versioned cache
+  key, UTC-complete days only, legacy files purged. `fetch_observations` = legacy hourly path.
+- `src/lead_targets.py`: one-sided matching (first obs at/after target; ASOS ≤20, MRMS ≤10, mesonet
+  ≤15 min), `truth_lag_min_*` per label, MRMS thunder taken from ASOS. `legacy=True` reproduces old.
+- `src/utils.py`: `metar_wx_to_category(..., legacy=False)` maps all-light RA groups to the light tier.
+- `src/mrms_observations.py`: archive URL fix, `fetch_mrms_multi` (one download per grid, all cities).
+- `backtest.py`: `--truth v2|legacy` (config `truth:`), report `meta` provenance, `--snapshots-csv`,
+  `--summary-only`, `--report-tag`; `truth_compare.py` for side-by-side reports.
+- Collector (**needs restart**): schema v3 (`obs` block, `algoVersion`, `gitSha`,
+  `radar.sampleStatus`); fetch_failed doesn't feed hysteresis — mirrored in `radarSampler.js`
+  (`SAMPLE_STATUS`, `?v=1.5.0`). Blitzortung coverage log + `lightning_truth_eval.py` exclusion.
+
+**Results (Sep 1–Oct 13, 182,967 polls; reports/truth_review_2026-10-25.txt):**
+
+| truth | rain FA | rain precision | 25–27 dBZ precision | intensity (scorer) c/u/o | start MAE / bias (n) |
+|---|---|---|---|---|---|
+| legacy | 6.1% | 27.0% | 14.2% | 61/38/1 | 44.9 / +44 (452) |
+| v2 (ASOS 5-min) | 5.0% | 37.4% | 22.7% | 27/12/61 | 23.7 / +10 (2,695) |
+| v2+MRMS | 5.4% | 35.8% | 19.4% | 35/10/55 | 22.7 / +12 (3,425) |
+
+Takeaways for tuning: the 25–27 dBZ FA problem is real under every truth (~22% precision); the
+"intensity understated" finding was a truth artifact — graded on the displayed tier the app now
+*overstates* (v2 49% correct / 35% over), so proposal C (shift thresholds down) is the wrong
+direction; om15 start bias is +8..+15 min like every method (the +29 was radar-poll truth). ASOS
+and MRMS agree on only 44% of wet polls — tune only on effects that hold under both.
+**Open:** intensity scorer grades `precip_phenomenon`, not the displayed tier (1,566 polls disagree).
+
+---
+
 ### [2026-05-17] MRMS truth-augmentation (Phase A of new-sources plan)
 
 **Problem:** ASOS labels are noisy in time and space — up to ~30 min off

@@ -28,7 +28,7 @@ function setPressureRange(range) {
 
 function _pcRender() {
     if (!_pcData) return;
-    const now   = new Date();
+    const now   = omLocalNow();   // compared against Open-Meteo local times
     const stats = _pcStats(_pcData, now);
     const delta = _pcDeltas(_pcData, now);
     const { times, pressures } = _pcSlice(_pcData, _pcRange, now);
@@ -36,7 +36,7 @@ function _pcRender() {
 
     let updatedStr = '';
     if (lastRefreshTime) {
-        const mins = Math.round((now - lastRefreshTime) / 60000);
+        const mins = Math.round((Date.now() - lastRefreshTime) / 60000);
         updatedStr = mins <= 1 ? 'just now' : `${mins} min ago`;
     }
 

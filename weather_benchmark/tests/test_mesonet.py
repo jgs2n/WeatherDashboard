@@ -133,11 +133,11 @@ def _make_obs_df(rows):
 def test_labeler_falls_back_to_asos_when_no_mesonet():
     snap = _FakeRecord(timestamp=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc))
     asos = _make_obs_df([{
-        'time_utc': '2026-05-17T12:00Z', 'precip_in': 0.5,
+        'time_utc': '2026-05-17T12:12Z', 'precip_in': 0.5,
         'has_thunder': False, 'condition_category': 'rain',
     }])
     out = label_lead_targets(snap, asos, mesonet_obs=None)
-    # +10 lead: nearest ASOS row is the 12:00 one — should produce labels
+    # +10 lead (12:10): first ASOS obs at/after the target is 12:12
     assert out['precip_active_+10'] is True
     assert out['truth_source_+10'] == 'asos'
 
@@ -168,7 +168,7 @@ def test_labeler_falls_back_when_mesonet_too_old():
     snap = _FakeRecord(timestamp=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc))
 
     asos = _make_obs_df([{
-        'time_utc': '2026-05-17T12:05Z', 'precip_in': 0.0,
+        'time_utc': '2026-05-17T12:15Z', 'precip_in': 0.0,
         'has_thunder': False, 'condition_category': 'clear',
     }])
     # Mesonet reading 40 min away — outside the 15-min window

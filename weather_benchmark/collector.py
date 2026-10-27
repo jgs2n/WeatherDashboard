@@ -19,6 +19,8 @@ See COLLECTOR.md for the operator guide.
 import argparse
 import json
 import logging
+import logging.handlers
+import os
 import re
 import signal
 import sys
@@ -36,7 +38,7 @@ from collector_lib.radar_sampler import (
 )
 from collector_lib.fetchers import (
     fetch_iem_latest_metar, fetch_open_meteo,
-    extract_model_context, extract_hourly_context,
+    extract_model_context, extract_hourly_context, source_stats_snapshot,
 )
 from collector_lib.lightning import empty_lightning_state, GlmFetcher
 from collector_lib.blitzortung_truth import BlitzortungRecorder
@@ -159,6 +161,7 @@ class CityWorker(threading.Thread):
         self._om_cache_current = None      # (response, fetched_at)
         self._om_cache_hourly = None       # (response, fetched_at)
         self.stats = {'polls': 0, 'writes': 0, 'errors': 0}
+        self.last_write_utc: Optional[str] = None   # heartbeat.json
 
     def run(self):
         # Initial stagger so cities don't all hit IEM simultaneously at startup.
@@ -292,6 +295,8 @@ class CityWorker(threading.Thread):
             summary=summary,
             model_context=model_context,
             model_hourly=model_hourly,
+            stale_sources=_stale_sources(obs=obs, model=om_current,
+                                         modelHourly=om_hourly),
         )
 
         self._write_record(record)
@@ -308,7 +313,9 @@ class CityWorker(threading.Thread):
             return cached[0]
         resp = fetch_open_meteo(self.city['lat'], self.city['lon'],
                                 want_hourly=(which == 'hourly'))
-        if resp:
+        # A stale fallback must not refresh the cache clock, or a dead API
+        # would keep serving the same response as if it were fresh.
+        if resp and not resp.get('_stale'):
             setattr(self, cache_attr, (resp, now))
         return resp
 
@@ -320,16 +327,68 @@ class CityWorker(threading.Thread):
         path = out_dir / f'{day}.jsonl'
         with open(path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, separators=(',', ':')) + '\n')
+        self.last_write_utc = record.get('timestamp')
+
+
+def _stale_sources(**responses) -> Dict[str, float]:
+    """{name: ageMin} for inputs served from fetchers' stale cache."""
+    return {name: resp['_stale']['ageMin'] for name, resp in responses.items()
+            if resp and resp.get('_stale')}
+
+
+# ── Heartbeat ───────────────────────────────────────────────────────────────
+
+HEARTBEAT_PATH = HERE / 'data' / 'heartbeat.json'
+
+
+def write_heartbeat(workers, started_utc: str, path: Path = HEARTBEAT_PATH) -> None:
+    """Liveness snapshot read by health_check.py (and humans).
+
+    Written atomically (tmp + replace) every metrics tick. A failure here is
+    logged and swallowed — the heartbeat must never take collection down.
+    """
+    payload = {
+        'updatedUtc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'startedUtc': started_utc,
+        'pid': os.getpid(),
+        'cities': {
+            w.city['name']: {'lastWriteUtc': w.last_write_utc, **w.stats}
+            for w in workers
+        },
+        'sources': source_stats_snapshot(),
+    }
+    tmp = path.with_suffix('.json.tmp')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload, indent=1), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning('Heartbeat write failed: %s', e)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def setup_logging(level: str):
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format='%(asctime)s %(name)s %(levelname)s: %(message)s',
-        datefmt='%H:%M:%S',
-    )
+LOG_FORMAT = '%(asctime)s %(name)s %(levelname)s: %(message)s'
+LOG_DATEFMT = '%Y-%m-%dT%H:%M:%SZ'
+
+
+def setup_logging(level: str, log_file: Optional[str] = None,
+                  max_mb: float = 10, backups: int = 5):
+    """ISO-8601 UTC timestamps. With ``log_file``, log to a size-rotated file
+    instead of stderr (run_collector.cmd's stderr capture then only holds
+    pre-logging crashes, so it no longer grows without bound)."""
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+    formatter.converter = time.gmtime
+    if log_file:
+        handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=int(max_mb * 1024 * 1024), backupCount=backups,
+            encoding='utf-8', delay=True)
+    else:
+        handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
 
 def main():
@@ -344,10 +403,14 @@ def main():
                         help='Single poll cycle per city, then exit (smoke test mode)')
     parser.add_argument('--include-holdout', action='store_true',
                         help='Include cities marked holdout=true (default: skip)')
+    parser.add_argument('--log-file',
+                        help='Log to this size-rotated file instead of stderr '
+                             '(used by run_collector.cmd)')
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
-    setup_logging(config.get('log_level', 'INFO'))
+    setup_logging(config.get('log_level', 'INFO'), args.log_file,
+                  config.get('log_max_mb', 10), config.get('log_backups', 5))
 
     all_cities = load_cities(Path(args.cities_file))
     if args.cities:
@@ -423,6 +486,8 @@ def main():
         w.start()
         workers.append(w)
 
+    started_utc = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    write_heartbeat(workers, started_utc)
     last_metrics = time.monotonic()
     metrics_interval = config.get('metrics_interval_sec', 300)
     try:
@@ -431,6 +496,7 @@ def main():
             now = time.monotonic()
             if now - last_metrics >= metrics_interval:
                 _log_metrics(workers)
+                write_heartbeat(workers, started_utc)
                 last_metrics = now
     finally:
         stop_event.set()
