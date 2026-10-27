@@ -27,8 +27,46 @@ function toggleForecastTimeline(location) {
 // the iframe is the only way to snap it back to the location (resets timeline).
 function recenterWindyMap(lat, lon) {
     const iframe = document.querySelector('.satellite-card .windy-iframe');
-    if (iframe) iframe.src = getWindyUrl(activeRadarView, lat, lon);
+    if (!iframe) return;
+    iframe.addEventListener('load', _flashMapDot, { once: true });
+    iframe.src = getWindyUrl(activeRadarView, lat, lon);
+    // Pull focus out of the iframe so the next tap into it fires window blur
+    window.focus();
 }
+
+// Windy's own marker drags a value bubble along, so after a recenter we flash
+// our own dot at the map center for a few seconds instead. It can't follow
+// pans inside the cross-origin iframe, so it also hides as soon as focus moves
+// into the map (any tap or drag start).
+let _mapDotTimer = null;
+
+function _flashMapDot() {
+    const container = document.querySelector('.satellite-card .satellite-container');
+    if (!container) return;
+    let dot = container.querySelector('.map-location-dot');
+    if (!dot) {
+        dot = document.createElement('div');
+        dot.className = 'map-location-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        container.appendChild(dot);
+    }
+    dot.classList.add('visible');
+    clearTimeout(_mapDotTimer);
+    _mapDotTimer = setTimeout(_hideMapDot, 5000);
+}
+
+function _hideMapDot() {
+    clearTimeout(_mapDotTimer);
+    const dot = document.querySelector('.satellite-card .map-location-dot');
+    if (dot) dot.classList.remove('visible');
+}
+
+window.addEventListener('blur', () => {
+    setTimeout(() => {
+        const el = document.activeElement;
+        if (el && el.classList.contains('windy-iframe')) _hideMapDot();
+    }, 0);
+});
 
 function getWindyUrl(view, lat, lon) {
     const height = 1000;
