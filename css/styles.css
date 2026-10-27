@@ -1288,9 +1288,10 @@ body {
     transform: translateY(-2px);
 }
 
-/* Recenter sits just left of the forecast toggle; it takes the auto margin */
-.map-recenter-btn + .forecast-timeline-toggle {
-    margin-left: 0.5rem;
+/* Compact icon-only button just right of the forecast toggle */
+.forecast-timeline-toggle.map-recenter-btn {
+    margin-left: 0;
+    padding: 0.6rem 0.75rem;
 }
 
 .toggle-icon {
@@ -2828,11 +2829,13 @@ body {
         justify-content: center;
         margin-top: 0.25rem;
     }
-    /* Recenter + forecast toggle share one row on mobile */
-    .map-recenter-btn,
-    .map-recenter-btn + .forecast-timeline-toggle {
-        flex: 1 1 40%;
-        margin-left: 0;
+    /* Forecast toggle fills the row, leaving room for the small recenter button */
+    .forecast-timeline-toggle:has(+ .map-recenter-btn) {
+        flex: 1 1 0;
+    }
+    .forecast-timeline-toggle.map-recenter-btn {
+        flex: 0 0 auto;
+        padding: 0.5rem 0.75rem;
     }
     .today-tonight-grid {
         grid-template-columns: 1fr;

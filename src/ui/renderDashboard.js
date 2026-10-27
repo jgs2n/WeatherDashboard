@@ -34,7 +34,7 @@ function getWindyUrl(view, lat, lon) {
     const height = 1000;
     const detail = showForecastTimeline ? 'true' : '';
     const baseUrl = `https://embed.windy.com/embed2.html?lat=${lat}&lon=${lon}&detailLat=${lat}&detailLon=${lon}&width=650&height=${height}&zoom=9&level=surface`;
-    const common = `&message=&marker=true&calendar=now&pressure=&type=map&location=coordinates&detail=${detail}&metricWind=mph&metricTemp=%C2%B0F&radarRange=-1`;
+    const common = `&message=&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=${detail}&metricWind=mph&metricTemp=%C2%B0F&radarRange=-1`;
 
     const overlays = {
         radar: '&overlay=radar&product=radar',
@@ -83,18 +83,18 @@ function renderRadarSection(location) {
         </div>
         <div class="radar-tabs">
             ${tabsHTML}
-            <button type="button" class="forecast-timeline-toggle map-recenter-btn"
-                 onclick="recenterWindyMap(${location.lat}, ${location.lon})"
-                 title="Recenter the map on this location (resets the timeline to now)">
-                <span class="toggle-icon">🎯</span>
-                <span class="toggle-text">Recenter</span>
-            </button>
             <div class="forecast-timeline-toggle"
                  onclick="toggleForecastTimeline({ lat: ${location.lat}, lon: ${location.lon}, name: '${(location.name || '').replace(/'/g, "\\'")}' })"
                  title="Toggle hourly forecast detail panel (click hours to navigate)">
                 <span class="toggle-icon">${showForecastTimeline ? '📊' : '📈'}</span>
-                <span class="toggle-text">${showForecastTimeline ? 'Hide' : 'Show'} Forecast Detail</span>
+                <span class="toggle-text">Forecast Detail</span>
             </div>
+            <button type="button" class="forecast-timeline-toggle map-recenter-btn"
+                 onclick="recenterWindyMap(${location.lat}, ${location.lon})"
+                 title="Recenter the map on this location (resets the timeline to now)"
+                 aria-label="Recenter map">
+                <span class="toggle-icon">🎯</span>
+            </button>
         </div>
         <div style="padding: 0.3rem 0; opacity: 0.6; font-size: 0.7rem;">${timelineHint}</div>
         <div class="satellite-container">
