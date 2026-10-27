@@ -1288,6 +1288,11 @@ body {
     transform: translateY(-2px);
 }
 
+/* Recenter sits just left of the forecast toggle; it takes the auto margin */
+.map-recenter-btn + .forecast-timeline-toggle {
+    margin-left: 0.5rem;
+}
+
 .toggle-icon {
     font-size: 1rem;
 }
@@ -2822,6 +2827,12 @@ body {
         flex-basis: 100%;
         justify-content: center;
         margin-top: 0.25rem;
+    }
+    /* Recenter + forecast toggle share one row on mobile */
+    .map-recenter-btn,
+    .map-recenter-btn + .forecast-timeline-toggle {
+        flex: 1 1 40%;
+        margin-left: 0;
     }
     .today-tonight-grid {
         grid-template-columns: 1fr;
