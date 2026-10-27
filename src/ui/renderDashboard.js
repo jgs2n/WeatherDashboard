@@ -37,7 +37,10 @@ function recenterWindyMap(lat, lon) {
 // Windy's own marker drags a value bubble along, so after a recenter we flash
 // our own dot at the map center for a few seconds instead. It can't follow
 // pans inside the cross-origin iframe, so it also hides as soon as focus moves
-// into the map (any tap or drag start).
+// into the map (any tap or drag start). Mouse-wheel zoom never moves focus, so
+// on mouse devices a transparent shield covers the map while the dot shows and
+// the first wheel or click on it hides the dot (that one action doesn't reach
+// the map). CSS hides the shield on touch devices, where blur already works.
 let _mapDotTimer = null;
 
 function _flashMapDot() {
@@ -49,8 +52,15 @@ function _flashMapDot() {
         dot.className = 'map-location-dot';
         dot.setAttribute('aria-hidden', 'true');
         container.appendChild(dot);
+
+        const shield = document.createElement('div');
+        shield.className = 'map-dot-shield';
+        shield.addEventListener('wheel', e => { e.preventDefault(); _hideMapDot(); }, { passive: false });
+        shield.addEventListener('pointerdown', _hideMapDot);
+        container.appendChild(shield);
     }
     dot.classList.add('visible');
+    container.querySelector('.map-dot-shield').classList.add('active');
     clearTimeout(_mapDotTimer);
     _mapDotTimer = setTimeout(_hideMapDot, 5000);
 }
@@ -59,6 +69,8 @@ function _hideMapDot() {
     clearTimeout(_mapDotTimer);
     const dot = document.querySelector('.satellite-card .map-location-dot');
     if (dot) dot.classList.remove('visible');
+    const shield = document.querySelector('.satellite-card .map-dot-shield');
+    if (shield) shield.classList.remove('active');
 }
 
 window.addEventListener('blur', () => {

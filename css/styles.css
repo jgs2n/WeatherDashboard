@@ -1240,6 +1240,19 @@ body {
     transition-duration: 0.2s;
 }
 
+/* Catches the first wheel/click while the dot shows (mouse devices only) */
+.map-dot-shield {
+    position: absolute;
+    inset: 0;
+    display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .map-dot-shield.active {
+        display: block;
+    }
+}
+
 .satellite-container iframe {
     display: block;
 }
