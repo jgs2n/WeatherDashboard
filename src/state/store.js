@@ -4,9 +4,27 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.7';
+const APP_VERSION = '0.9.8';
 
 const CHANGELOG = [
+    {
+        version: '0.9.8',
+        date: '2026-10-28',
+        features: [
+            {
+                title: 'Weather Maps: Choose Windy or Ventusky',
+                desc: 'The switch at the top right of Weather Maps now offers Ventusky alongside Windy, and remembers your choice. Ventusky’s forecast maps step hour by hour with the model of your choice (Auto, ECMWF, HRRR, RRFS, NBM, GFS, ICON or GEM), its radar goes back to midnight and runs about an hour into the future, and its satellite view is GOES imagery. An "Open" link under the tabs jumps to the full Windy or Ventusky site at the same place and layer.'
+            },
+            {
+                title: 'New Future Radar Tab',
+                desc: 'Watch the last hour of real radar run straight into the HRRR model’s forecast radar, out to about 18 hours ahead. Press play or drag the slider: the green part of the slider is observed radar and the orange part is the forecast. The forecast is a computer model’s guess, so storms can arrive earlier or later or in a different spot than shown. US only.'
+            },
+            {
+                title: 'Map Title Fix',
+                desc: 'The Weather Maps title no longer drops the state after you switch map tabs.'
+            },
+        ],
+    },
     {
         version: '0.9.7',
         date: '2026-10-25',
@@ -253,6 +271,12 @@ let cachedUtcOffsetSec = null; // active location's UTC offset (Open-Meteo utc_o
 let activeRadarView = 'radar';
 let showForecastTimeline = false;
 
+// Weather Maps provider ('windy' | 'ventusky') and the Ventusky forecast model
+const MAP_PREFS_KEY = 'mapPrefsV1';
+const DEFAULT_MAP_PROVIDER = 'windy';
+let mapProvider = DEFAULT_MAP_PROVIDER;
+let mapModel = 'auto';
+
 // Alert state
 let cachedAlerts = { active: [], upcoming: [] };
 
@@ -305,6 +329,7 @@ function loadSavedLocations() {
     // Load section order + visibility
     loadSectionOrder();
     loadSectionVisibility();
+    loadMapPrefs();
     const storedNWS = localStorage.getItem('nwsShowByDefault');
     nwsShowByDefault = storedNWS !== null ? storedNWS === 'true' : null;
 
@@ -399,6 +424,29 @@ function loadSectionVisibility() {
 function saveSectionVisibility(vis) {
     sectionVisibility = vis;
     localStorage.setItem(SECTION_VISIBILITY_KEY, JSON.stringify(vis));
+}
+
+// Load Weather Maps provider/model from localStorage
+function loadMapPrefs() {
+    try {
+        const stored = localStorage.getItem(MAP_PREFS_KEY);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (parsed && (parsed.provider === 'windy' || parsed.provider === 'ventusky')) {
+                mapProvider = parsed.provider;
+            }
+            if (parsed && typeof parsed.model === 'string') {
+                mapModel = parsed.model;
+            }
+        }
+    } catch (e) {
+        console.warn('[Settings] Failed to load map prefs:', e.message);
+    }
+}
+
+// Save Weather Maps provider/model to localStorage
+function saveMapPrefs() {
+    localStorage.setItem(MAP_PREFS_KEY, JSON.stringify({ provider: mapProvider, model: mapModel }));
 }
 
 // Save nowcast state to localStorage

@@ -1199,7 +1199,7 @@ body {
     animation: none !important;
 }
 
-/* Prevent card hover effects from interfering with Windy iframe interaction */
+/* Prevent card hover effects from interfering with map iframe interaction */
 .card.satellite-card:hover {
     transform: none !important;
     box-shadow: none;
@@ -1336,6 +1336,219 @@ body {
 
 .toggle-text {
     font-size: 0.75rem;
+}
+
+/* Without Windy's Forecast Detail toggle, recenter takes over the push-right */
+.radar-tab + .map-recenter-btn {
+    margin-left: auto;
+}
+
+.satellite-card .card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+/* Windy | Ventusky switch in the Weather Maps header (styled like .source-badge) */
+.map-provider-switch {
+    display: inline-flex;
+    border: 1px solid var(--accent-primary);
+    border-radius: 20px;
+    overflow: hidden;
+}
+
+.map-provider-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    padding: 0.3rem 0.8rem;
+    font-family: inherit;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05rem;
+    cursor: pointer;
+}
+
+.map-provider-btn.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: var(--accent-primary);
+    font-weight: 600;
+}
+
+.map-meta-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    padding: 0.3rem 0;
+    font-size: 0.7rem;
+}
+
+.map-hint {
+    opacity: 0.6;
+}
+
+.map-model-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text-secondary);
+}
+
+.map-model-select {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.2rem 0.4rem;
+    font-family: inherit;
+    font-size: 0.7rem;
+}
+
+/* iOS zooms the page when focusing a select smaller than 16px */
+@media (pointer: coarse) {
+    .map-model-select {
+        font-size: 16px;
+    }
+}
+
+.map-full-link {
+    margin-left: auto;
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+
+/* Future Radar — Leaflet map, observed radar running into the HRRR forecast */
+.radar-loop-map {
+    height: 560px;
+    max-height: 65vh;
+    background: #0e1220;
+}
+
+/* Turns the light OSM basemap dark (radar tiles are not affected) */
+.radar-loop-map .rl-basemap {
+    filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.85) saturate(0.5);
+}
+
+.radar-loop-map .leaflet-bar a {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border-bottom-color: var(--border);
+}
+
+.radar-loop-map .leaflet-control-attribution {
+    background: rgba(10, 14, 26, 0.75);
+    color: var(--text-secondary);
+}
+
+.radar-loop-map .leaflet-control-attribution a {
+    color: var(--accent-primary);
+}
+
+.radar-loop-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.radar-loop-play {
+    flex: 0 0 auto;
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: 50%;
+    border: 2px solid var(--accent-primary);
+    background: rgba(0, 212, 255, 0.15);
+    color: var(--accent-primary);
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+/* Track: green while observed, orange once the HRRR forecast starts (--rl-seam set in radarLoop.js) */
+.radar-loop-slider {
+    --rl-seam: 100%;
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #22c55e 0 var(--rl-seam), var(--accent-warm) var(--rl-seam) 100%);
+    outline: none;
+    cursor: pointer;
+}
+
+.radar-loop-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    border: 2px solid var(--bg-dark);
+}
+
+.radar-loop-slider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    border: 2px solid var(--bg-dark);
+}
+
+.radar-loop-time {
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+
+.rl-tag {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    margin-right: 0.3rem;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05rem;
+}
+
+.rl-tag-obs {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.rl-tag-hrrr {
+    background: rgba(255, 165, 0, 0.2);
+    color: var(--accent-warm);
+}
+
+.radar-loop-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1rem;
+    margin-top: 0.4rem;
+    font-size: 0.7rem;
+    opacity: 0.7;
+}
+
+/* Keeps each colour key next to its label when the legend wraps */
+.rl-legend-item {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+}
+
+.rl-key {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+
+.rl-key-obs {
+    background: #22c55e;
+}
+
+.rl-key-hrrr {
+    background: var(--accent-warm);
 }
 
 .location-picker-modal {
@@ -2920,6 +3133,10 @@ body {
         font-size: 1rem;
     }
     .source-badge {
+        font-size: 0.6rem;
+        padding: 0.25rem 0.6rem;
+    }
+    .map-provider-btn {
         font-size: 0.6rem;
         padding: 0.25rem 0.6rem;
     }

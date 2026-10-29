@@ -1,10 +1,11 @@
-const CACHE_NAME = 'weather-hq-v1.61.0';
+const CACHE_NAME = 'weather-hq-v1.62.0';
 // NOTE: entries with ?v= must match index.html exactly — the fetch handler
 // matches full URLs including the query string, so a stale ?v here means the
 // file silently misses the cache offline.
 const PRECACHE_URLS = [
     './',
-    'css/styles.css?v=1.26.0',
+    'lib/leaflet/1.9.4/leaflet.css',
+    'css/styles.css?v=1.27.0',
     'icons/meteocons/clear-day.svg',
     'icons/meteocons/clear-night.svg',
     'icons/meteocons/partly-cloudy-day.svg',
@@ -25,7 +26,7 @@ const PRECACHE_URLS = [
     'icons/meteocons/not-available.svg',
     'pwa/manifest.json',
     'pwa/icon.svg',
-    'src/state/store.js?v=1.21.0',
+    'src/state/store.js?v=1.22.0',
     'src/utils/weatherCodes.js?v=1.0.0',
     'src/utils/risk.js?v=1.2.7',
     'src/utils/dailyIcon.js?v=1.1.0',
@@ -57,9 +58,11 @@ const PRECACHE_URLS = [
     'src/ui/forecastModal.js?v=1.1.0',
     'src/ui/hourly.js?v=1.0.0',
     'src/ui/share.js?v=1.0.0',
-    'src/ui/renderDashboard.js?v=1.21.0',
+    'lib/leaflet/1.9.4/leaflet.js',
+    'src/ui/radarLoop.js?v=1.0.0',
+    'src/ui/renderDashboard.js?v=1.22.0',
     'src/ui/tabDrag.js?v=1.1.7',
-    'src/main.js?v=1.18.0',
+    'src/main.js?v=1.18.1',
     'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Bebas+Neue&display=swap'
 ];
 
@@ -81,7 +84,13 @@ self.addEventListener('activate', event => {
     );
 });
 
+// Map tiles and radar metadata: the browser fetches these directly. They change
+// every few minutes and there are hundreds per loop, so the SW stays out of it.
+const MAP_DATA_HOSTS = ['mesonet.agron.iastate.edu', 'tile.openstreetmap.org'];
+
 self.addEventListener('fetch', event => {
+    const url = event.request.url;
+    if (event.request.method !== 'GET' || MAP_DATA_HOSTS.some(h => url.includes(h))) return;
     // Network-first for API calls, cache-first for assets
     if (event.request.url.includes('api.') || event.request.url.includes('weather.gov')) {
         event.respondWith(

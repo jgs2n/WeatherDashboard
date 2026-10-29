@@ -1,7 +1,7 @@
 // Dashboard rendering — current card, forecast grid, hourly strip, radar section
 // Globals read/written: cachedHourlyData, activeHourlyIndex, forecastDays, cachedAlerts,
 //                       nwsShowByDefault, activeRadarView, showForecastTimeline, locationTemps,
-//                       cachedSPCOutlook
+//                       cachedSPCOutlook, mapProvider, mapModel
 let cachedSPCOutlook = null;
 // Utils: WEATHER_CODES, calculateFireRisk, getPressureTrend, formatSunTime, getWindDirection,
 //        getAQICategory, getMoonPhase, getMoonTimes, escapeHTML, extractDisplayName
@@ -23,13 +23,31 @@ function toggleForecastTimeline(location) {
     renderRadarSection(location);
 }
 
-// The Windy embed is cross-origin, so it can't be panned from here — reloading
-// the iframe is the only way to snap it back to the location (resets timeline).
-function recenterWindyMap(lat, lon) {
-    const iframe = document.querySelector('.satellite-card .windy-iframe');
+function switchMapProvider(provider, location) {
+    mapProvider = provider;
+    saveMapPrefs();
+    renderRadarSection(location);
+}
+
+function switchMapModel(model, location) {
+    mapModel = model;
+    saveMapPrefs();
+    renderRadarSection(location);
+}
+
+// Map embeds are cross-origin, so they can't be panned from here — reloading
+// the iframe is the only way to snap back to the location (resets timeline).
+// The Future Radar map is our own Leaflet map, so it just pans back.
+function recenterMap(location) {
+    if (activeRadarView === 'future') {
+        recenterRadarLoop(location);
+        return;
+    }
+    const iframe = document.querySelector('.satellite-card .map-embed-iframe');
     if (!iframe) return;
-    iframe.addEventListener('load', _flashMapDot, { once: true });
-    iframe.src = getWindyUrl(activeRadarView, lat, lon);
+    // Ventusky draws its own pin; Windy needs our flashed dot
+    if (mapProvider === 'windy') iframe.addEventListener('load', _flashMapDot, { once: true });
+    iframe.src = getMapEmbedUrl(activeRadarView, location);
     // Pull focus out of the iframe so the next tap into it fires window blur
     window.focus();
 }
@@ -76,7 +94,7 @@ function _hideMapDot() {
 window.addEventListener('blur', () => {
     setTimeout(() => {
         const el = document.activeElement;
-        if (el && el.classList.contains('windy-iframe')) _hideMapDot();
+        if (el && el.classList.contains('map-embed-iframe')) _hideMapDot();
     }, 0);
 });
 
@@ -98,12 +116,64 @@ function getWindyUrl(view, lat, lon) {
     return baseUrl + overlays[view] + common;
 }
 
+// Ventusky embed layer per tab. Forecast tabs also take the chosen model (m=);
+// radar/satellite are observations (Ventusky's radar adds a ~1 h nowcast).
+const VENTUSKY_LAYERS = {
+    radar: 'radar',
+    satellite: 'satellite',
+    wind: 'wind-10m',
+    temp: 'temperature-2m',
+    clouds: 'clouds-total',
+    rain: 'rain-1h'
+};
+
+const VENTUSKY_MODELS = [
+    { id: 'auto', name: 'Auto' },
+    { id: 'ecmwf_hres', name: 'ECMWF' },
+    { id: 'hrrr', name: 'HRRR (US)' },
+    { id: 'rrfs', name: 'RRFS (US)' },
+    { id: 'nbm', name: 'NBM (US)' },
+    { id: 'gfs', name: 'GFS' },
+    { id: 'icon', name: 'ICON' },
+    { id: 'gem', name: 'GEM' }
+];
+
+function _ventuskyModel() {
+    return VENTUSKY_MODELS.some(m => m.id === mapModel) ? mapModel : 'auto';
+}
+
+function getVentuskyUrl(view, lat, lon, name) {
+    const isForecast = view !== 'radar' && view !== 'satellite';
+    const model = isForecast && _ventuskyModel() !== 'auto' ? `&m=${_ventuskyModel()}` : '';
+    // Pin fields are ';'-separated, so keep the label free of them
+    const label = encodeURIComponent((name || '').split(',')[0].replace(/;/g, ' ').trim());
+    return `https://embed.ventusky.com/?p=${lat};${lon};8&l=${VENTUSKY_LAYERS[view]}${model}&pin=${lat};${lon};dot;${label}`;
+}
+
+function getMapEmbedUrl(view, location) {
+    return mapProvider === 'ventusky'
+        ? getVentuskyUrl(view, location.lat, location.lon, location.name)
+        : getWindyUrl(view, location.lat, location.lon);
+}
+
+// Same view on the provider's full site, where the model pickers and extra layers live
+function getFullMapUrl(view, location) {
+    const { lat, lon } = location;
+    return mapProvider === 'ventusky'
+        ? `https://www.ventusky.com/?p=${lat};${lon};8&l=${VENTUSKY_LAYERS[view]}`
+        : `https://www.windy.com/?${view},${lat},${lon},9`;
+}
+
 function renderRadarSection(location) {
     const radarCard = document.querySelector('.satellite-card');
     if (!radarCard) return;
 
+    // Leaving the Future Radar tab (or re-rendering it) tears its map down first
+    stopRadarLoop();
+
     const views = [
         { id: 'radar', name: 'Radar', icon: '📡', forecast: false },
+        { id: 'future', name: 'Future Radar', icon: '⏩', forecast: true },
         { id: 'satellite', name: 'Satellite', icon: '🛰️', forecast: false },
         { id: 'wind', name: 'Wind', icon: '💨', forecast: true },
         { id: 'temp', name: 'Temperature', icon: '🌡️', forecast: true },
@@ -113,50 +183,113 @@ function renderRadarSection(location) {
 
     const activeView = views.find(v => v.id === activeRadarView) || views[0];
     const isObservational = !activeView.forecast;
+    // Future Radar is our own map (observed radar → HRRR), the same for either provider
+    const isFuture = activeView.id === 'future';
+    const isVentusky = mapProvider === 'ventusky';
+    const providerName = isVentusky ? 'Ventusky' : 'Windy';
+    // Location literal for the inline onclick handlers (inside a double-quoted attribute);
+    // carries the codes locationLabel() needs so the title keeps its ", ST" suffix
+    const q = s => `'${String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')}'`;
+    const locArg = `{ lat: ${location.lat}, lon: ${location.lon}, name: ${q(location.name)}, countryCode: ${q(location.countryCode)}, stateCode: ${q(location.stateCode)} }`;
 
     const tabsHTML = views.map(view => `
         <div class="radar-tab ${activeRadarView === view.id ? 'active' : ''}"
-             onclick="switchRadarView('${view.id}', { lat: ${location.lat}, lon: ${location.lon}, name: '${(location.name || '').replace(/'/g, "\\'")}' })">
+             onclick="switchRadarView('${view.id}', ${locArg})">
             <span class="radar-tab-icon">${view.icon}</span>
             ${view.name}
         </div>
     `).join('');
 
-    const timelineHint = isObservational
-        ? '<span class="map-hint">⏪ Past data only — drag timeline backward</span>'
-        : '<span class="map-hint">⏩ Forecast — drag timeline to see future conditions</span>';
+    let timelineHint;
+    if (isFuture) {
+        timelineHint = '⏪⏩ Last hour of radar, then HRRR’s forecast radar — press play or drag the slider';
+    } else if (isVentusky && activeView.id === 'radar') {
+        timelineHint = '⏪⏩ Radar history plus ~1 h nowcast ahead — drag the timeline';
+    } else if (isObservational) {
+        timelineHint = '⏪ Past data only — drag timeline backward';
+    } else {
+        timelineHint = isVentusky
+            ? '⏩ Hourly forecast — drag timeline to see future conditions'
+            : '⏩ Forecast — drag timeline to see future conditions';
+    }
+
+    // The Ventusky embed has no model picker of its own, so forecast tabs get one here
+    const modelSelectHTML = isVentusky && !isObservational && !isFuture ? `
+            <label class="map-model-label">Model
+                <select class="map-model-select" onchange="switchMapModel(this.value, ${locArg})">
+                    ${VENTUSKY_MODELS.map(m => `<option value="${m.id}" ${m.id === _ventuskyModel() ? 'selected' : ''}>${m.name}</option>`).join('')}
+                </select>
+            </label>` : '';
+
+    const providerBtn = (id, name) => `<button type="button" class="map-provider-btn ${mapProvider === id ? 'active' : ''}"
+                aria-pressed="${mapProvider === id}"
+                onclick="switchMapProvider('${id}', ${locArg})">${name}</button>`;
+
+    // Forecast Detail is Windy's own meteogram panel (detail=true)
+    const forecastDetailHTML = isVentusky || isFuture ? '' : `
+            <div class="forecast-timeline-toggle"
+                 onclick="toggleForecastTimeline(${locArg})"
+                 title="Toggle hourly forecast detail panel (click hours to navigate)">
+                <span class="toggle-icon">${showForecastTimeline ? '📊' : '📈'}</span>
+                <span class="toggle-text">Forecast Detail</span>
+            </div>`;
+
+    const headerRightHTML = isFuture
+        ? '<div class="source-badge">NOAA · IEM</div>'
+        : `<div class="map-provider-switch" role="group" aria-label="Map provider">
+                ${providerBtn('windy', 'Windy')}${providerBtn('ventusky', 'Ventusky')}
+            </div>`;
+
+    const mapBodyHTML = isFuture ? `
+        <div class="satellite-container radar-loop">
+            <div id="radarLoopMap" class="radar-loop-map"></div>
+        </div>
+        <div class="radar-loop-controls">
+            <button type="button" id="radarLoopPlay" class="radar-loop-play"
+                    onclick="toggleRadarLoopPlay()" aria-label="Play radar loop">▶</button>
+            <input type="range" id="radarLoopSlider" class="radar-loop-slider" min="0" max="0" value="0"
+                   oninput="seekRadarLoop(this.value)" aria-label="Radar time">
+        </div>
+        <div class="radar-loop-time" id="radarLoopTime">Loading radar…</div>
+        <div class="radar-loop-legend" id="radarLoopNote">
+            <span class="rl-legend-item"><span class="rl-key rl-key-obs"></span>Observed radar</span>
+            <span class="rl-legend-item"><span class="rl-key rl-key-hrrr"></span>HRRR model forecast — a model’s guess; storm timing and placement can be off</span>
+        </div>` : `
+        <div class="satellite-container">
+            <iframe
+                src="${getMapEmbedUrl(activeRadarView, location)}"
+                frameborder="0"
+                allow="fullscreen; autoplay"
+                class="map-embed-iframe"
+                title="${providerName} weather map"
+                style="width: 100%; height: ${isVentusky ? 700 : 1000}px; border-radius: 8px;">
+            </iframe>
+        </div>`;
 
     radarCard.innerHTML = `
         <div class="card-header">
             <div class="card-title">WEATHER MAPS — ${locationLabel(location)}</div>
-            <div class="source-badge">Windy</div>
+            ${headerRightHTML}
         </div>
         <div class="radar-tabs">
             ${tabsHTML}
-            <div class="forecast-timeline-toggle"
-                 onclick="toggleForecastTimeline({ lat: ${location.lat}, lon: ${location.lon}, name: '${(location.name || '').replace(/'/g, "\\'")}' })"
-                 title="Toggle hourly forecast detail panel (click hours to navigate)">
-                <span class="toggle-icon">${showForecastTimeline ? '📊' : '📈'}</span>
-                <span class="toggle-text">Forecast Detail</span>
-            </div>
+            ${forecastDetailHTML}
             <button type="button" class="forecast-timeline-toggle map-recenter-btn"
-                 onclick="recenterWindyMap(${location.lat}, ${location.lon})"
+                 onclick="recenterMap(${locArg})"
                  title="Recenter the map on this location (resets the timeline to now)"
                  aria-label="Recenter map">
                 <span class="toggle-icon">🎯</span>
             </button>
         </div>
-        <div style="padding: 0.3rem 0; opacity: 0.6; font-size: 0.7rem;">${timelineHint}</div>
-        <div class="satellite-container">
-            <iframe
-                src="${getWindyUrl(activeRadarView, location.lat, location.lon)}"
-                frameborder="0"
-                allow="fullscreen; autoplay"
-                class="windy-iframe"
-                style="width: 100%; height: 1000px; border-radius: 8px;">
-            </iframe>
+        <div class="map-meta-row">
+            <span class="map-hint">${timelineHint}</span>
+            ${modelSelectHTML}
+            ${isFuture ? '' : `<a class="map-full-link" href="${getFullMapUrl(activeRadarView, location)}" target="_blank" rel="noopener">Open ${providerName} ↗</a>`}
         </div>
+        ${mapBodyHTML}
     `;
+
+    if (isFuture) startRadarLoop(location);
 }
 
 // ─── Lightning line helpers ──────────────────────────────────────────────────
@@ -683,13 +816,15 @@ function renderHourlyStrip(hourly, current, locLabel) {
 // ─── Lazy radar loading ──────────────────────────────────────────────────────
 
 function lazyLoadRadar(location) {
+    // The dashboard was just rebuilt, so any Future Radar map is now detached
+    stopRadarLoop();
     const radarCard = document.querySelector('.satellite-card');
     if (!radarCard) return;
 
     radarCard.innerHTML = `
         <div class="card-header">
             <div class="card-title">WEATHER MAPS — ${locationLabel(location)}</div>
-            <div class="source-badge">Windy</div>
+            <div class="source-badge">${mapProvider === 'ventusky' ? 'Ventusky' : 'Windy'}</div>
         </div>
         <div class="skeleton-block skeleton-map"></div>
     `;

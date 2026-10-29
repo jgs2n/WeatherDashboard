@@ -11,6 +11,7 @@ function cleanupLocationState() {
     if (typeof resetRadarState === 'function') resetRadarState();
     if (typeof resetSkyHysteresis === 'function') resetSkyHysteresis();
     if (typeof resetPredictionMemory === 'function') resetPredictionMemory();
+    if (typeof stopRadarLoop === 'function') stopRadarLoop();
 }
 
 const LOCATION_MATCH_DEG = 0.01;
