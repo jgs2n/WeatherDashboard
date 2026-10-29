@@ -4,9 +4,23 @@
 // loadSavedLocations() is called from init() to preserve startup timing.
 
 // App version
-const APP_VERSION = '0.9.8';
+const APP_VERSION = '0.9.9';
 
 const CHANGELOG = [
+    {
+        version: '0.9.9',
+        date: '2026-10-29',
+        features: [
+            {
+                title: 'Tidier Weather Maps Tabs',
+                desc: 'The map tabs are now two neat rows on a phone — Radar, Future Radar and Satellite, then Wind, Temp, Clouds and Rain — with recenter, the Windy detail toggle or Ventusky model picker, and the "Open" link sharing one small row underneath. The hint lines under the tabs are gone.'
+            },
+            {
+                title: 'Future Radar Opens Faster',
+                desc: 'While you are looking at another map tab, the app quietly gets the Future Radar map ready, so tapping the tab shows radar right away instead of loading. Future Radar now only appears for locations in the lower 48, where its radar and forecast data exist.'
+            },
+        ],
+    },
     {
         version: '0.9.8',
         date: '2026-10-28',

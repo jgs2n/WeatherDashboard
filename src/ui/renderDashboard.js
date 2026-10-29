@@ -171,17 +171,20 @@ function renderRadarSection(location) {
     // Leaving the Future Radar tab (or re-rendering it) tears its map down first
     stopRadarLoop();
 
+    // Two groups: what's happening now, and model forecasts. `short` is the
+    // label on narrow screens.
     const views = [
-        { id: 'radar', name: 'Radar', icon: '📡', forecast: false },
-        { id: 'future', name: 'Future Radar', icon: '⏩', forecast: true },
-        { id: 'satellite', name: 'Satellite', icon: '🛰️', forecast: false },
-        { id: 'wind', name: 'Wind', icon: '💨', forecast: true },
-        { id: 'temp', name: 'Temperature', icon: '🌡️', forecast: true },
-        { id: 'clouds', name: 'Clouds', icon: '☁️', forecast: true },
-        { id: 'rain', name: 'Rain', icon: '🌧️', forecast: true }
-    ];
+        { id: 'radar', name: 'Radar', icon: '📡', forecast: false, group: 'live' },
+        { id: 'future', name: 'Future Radar', icon: '⏩', forecast: true, group: 'live' },
+        { id: 'satellite', name: 'Satellite', icon: '🛰️', forecast: false, group: 'live' },
+        { id: 'wind', name: 'Wind', icon: '💨', forecast: true, group: 'forecast' },
+        { id: 'temp', name: 'Temperature', short: 'Temp', icon: '🌡️', forecast: true, group: 'forecast' },
+        { id: 'clouds', name: 'Clouds', icon: '☁️', forecast: true, group: 'forecast' },
+        { id: 'rain', name: 'Rain', icon: '🌧️', forecast: true, group: 'forecast' }
+    ].filter(v => v.id !== 'future' || radarLoopCovers(location)); // IEM radar + HRRR are CONUS-only
 
     const activeView = views.find(v => v.id === activeRadarView) || views[0];
+    activeRadarView = activeView.id;
     const isObservational = !activeView.forecast;
     // Future Radar is our own map (observed radar → HRRR), the same for either provider
     const isFuture = activeView.id === 'future';
@@ -192,26 +195,17 @@ function renderRadarSection(location) {
     const q = s => `'${String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')}'`;
     const locArg = `{ lat: ${location.lat}, lon: ${location.lon}, name: ${q(location.name)}, countryCode: ${q(location.countryCode)}, stateCode: ${q(location.stateCode)} }`;
 
-    const tabsHTML = views.map(view => `
-        <div class="radar-tab ${activeRadarView === view.id ? 'active' : ''}"
-             onclick="switchRadarView('${view.id}', ${locArg})">
-            <span class="radar-tab-icon">${view.icon}</span>
-            ${view.name}
-        </div>
-    `).join('');
-
-    let timelineHint;
-    if (isFuture) {
-        timelineHint = '⏪⏩ Last hour of radar, then HRRR’s forecast radar — press play or drag the slider';
-    } else if (isVentusky && activeView.id === 'radar') {
-        timelineHint = '⏪⏩ Radar history plus ~1 h nowcast ahead — drag the timeline';
-    } else if (isObservational) {
-        timelineHint = '⏪ Past data only — drag timeline backward';
-    } else {
-        timelineHint = isVentusky
-            ? '⏩ Hourly forecast — drag timeline to see future conditions'
-            : '⏩ Forecast — drag timeline to see future conditions';
-    }
+    const tabHTML = view => `
+            <div class="radar-tab ${activeRadarView === view.id ? 'active' : ''}"
+                 onclick="switchRadarView('${view.id}', ${locArg})">
+                <span class="radar-tab-icon">${view.icon}</span>
+                ${view.short
+                    ? `<span class="tab-long">${view.name}</span><span class="tab-short">${view.short}</span>`
+                    : `<span>${view.name}</span>`}
+            </div>`;
+    const tabGroupHTML = group => `
+        <div class="radar-tab-group">${views.filter(v => v.group === group).map(tabHTML).join('')}
+        </div>`;
 
     // The Ventusky embed has no model picker of its own, so forecast tabs get one here
     const modelSelectHTML = isVentusky && !isObservational && !isFuture ? `
@@ -227,12 +221,10 @@ function renderRadarSection(location) {
 
     // Forecast Detail is Windy's own meteogram panel (detail=true)
     const forecastDetailHTML = isVentusky || isFuture ? '' : `
-            <div class="forecast-timeline-toggle"
-                 onclick="toggleForecastTimeline(${locArg})"
-                 title="Toggle hourly forecast detail panel (click hours to navigate)">
-                <span class="toggle-icon">${showForecastTimeline ? '📊' : '📈'}</span>
-                <span class="toggle-text">Forecast Detail</span>
-            </div>`;
+            <button type="button" class="map-tool-btn ${showForecastTimeline ? 'active' : ''}"
+                    onclick="toggleForecastTimeline(${locArg})"
+                    aria-pressed="${showForecastTimeline}"
+                    title="Toggle Windy's hourly forecast detail panel (click hours to navigate)">📈 Detail</button>`;
 
     const headerRightHTML = isFuture
         ? '<div class="source-badge">NOAA · IEM</div>'
@@ -253,7 +245,7 @@ function renderRadarSection(location) {
         <div class="radar-loop-time" id="radarLoopTime">Loading radar…</div>
         <div class="radar-loop-legend" id="radarLoopNote">
             <span class="rl-legend-item"><span class="rl-key rl-key-obs"></span>Observed radar</span>
-            <span class="rl-legend-item"><span class="rl-key rl-key-hrrr"></span>HRRR model forecast — a model’s guess; storm timing and placement can be off</span>
+            <span class="rl-legend-item"><span class="rl-key rl-key-hrrr"></span>HRRR forecast — a model’s guess</span>
         </div>` : `
         <div class="satellite-container">
             <iframe
@@ -271,25 +263,27 @@ function renderRadarSection(location) {
             <div class="card-title">WEATHER MAPS — ${locationLabel(location)}</div>
             ${headerRightHTML}
         </div>
-        <div class="radar-tabs">
-            ${tabsHTML}
-            ${forecastDetailHTML}
-            <button type="button" class="forecast-timeline-toggle map-recenter-btn"
-                 onclick="recenterMap(${locArg})"
-                 title="Recenter the map on this location (resets the timeline to now)"
-                 aria-label="Recenter map">
-                <span class="toggle-icon">🎯</span>
-            </button>
+        <div class="radar-tabs">${tabGroupHTML('live')}${tabGroupHTML('forecast')}
         </div>
-        <div class="map-meta-row">
-            <span class="map-hint">${timelineHint}</span>
-            ${modelSelectHTML}
-            ${isFuture ? '' : `<a class="map-full-link" href="${getFullMapUrl(activeRadarView, location)}" target="_blank" rel="noopener">Open ${providerName} ↗</a>`}
+        <div class="map-tools-row">
+            ${forecastDetailHTML}${modelSelectHTML}
+            <div class="map-tools-right">
+                <button type="button" class="map-tool-btn"
+                        onclick="recenterMap(${locArg})"
+                        title="Recenter the map on this location (resets the timeline to now)"
+                        aria-label="Recenter map">🎯</button>
+                ${isFuture ? '' : `<a class="map-full-link" href="${getFullMapUrl(activeRadarView, location)}" target="_blank" rel="noopener">Open ${providerName} ↗</a>`}
+            </div>
         </div>
         ${mapBodyHTML}
     `;
 
-    if (isFuture) startRadarLoop(location);
+    if (isFuture) {
+        startRadarLoop(location);
+    } else {
+        // Warm up Future Radar in the background so the tab opens without a wait
+        scheduleRadarLoopPrefetch(location);
+    }
 }
 
 // ─── Lightning line helpers ──────────────────────────────────────────────────

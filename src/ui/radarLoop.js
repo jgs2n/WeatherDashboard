@@ -18,8 +18,13 @@ const RADAR_LOOP_CFG = {
     MAX_LOAD_WAITS:   6,     // × 250 ms waiting for the next frame's tiles
     KEEP_AROUND:      3,     // frames kept loaded either side of the current one
     REBUILD_AFTER_MS: 10 * 60 * 1000, // refresh the frame list when this stale
+    PREFETCH_DELAY_MS: 1500,          // after the map card renders, so its embed loads first
+    PREFETCH_FRESH_MS: 4 * 60 * 1000, // HRRR tiles cache for 5 min, so reuse within 4
+    BASEMAP:          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     ZOOM:             7,
     OPACITY:          0.75,
+    // IEM's N0Q composite and the HRRR domain cover the lower 48 only
+    BOUNDS:           { south: 22, north: 52, west: -128, east: -64 },
 };
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -34,6 +39,14 @@ let _rlGen = 0;            // bumps on every start/stop so stale async work drop
 let _rlLocation = null;
 let _rlInitMs = null;      // HRRR run init time (null = no forecast frames)
 let _rlBuiltAt = 0;
+let _rlPrefetch = null;    // { key, at, meta: Promise<{ newestObsMs, initMs }>, images: [] }
+let _rlPrefetchTimer = null;
+
+function radarLoopCovers(location) {
+    const b = RADAR_LOOP_CFG.BOUNDS;
+    return location.lat >= b.south && location.lat <= b.north &&
+        location.lon >= b.west && location.lon <= b.east;
+}
 
 // ── Frame list ───────────────────────────────────────────────────────────────
 
@@ -104,6 +117,81 @@ function _rlBuildFrames(newestObsMs, initMs, lite) {
     return frames;
 }
 
+// ── Background prefetch ──────────────────────────────────────────────────────
+// While another map tab is showing, fetch the frame list and load the tiles the
+// Future Radar tab paints first, so tapping it opens without a wait.
+
+function _rlKey(location) {
+    return `${location.lat.toFixed(3)},${location.lon.toFixed(3)}`;
+}
+
+function _rlFetchMeta() {
+    return Promise.all([_rlNewestObsMs(), _rlHrrrInitMs()])
+        .then(([newestObsMs, initMs]) => ({ newestObsMs, initMs }));
+}
+
+// Frame-list inputs for this location: a fresh prefetch if there is one
+function _rlMetaFor(location) {
+    const p = _rlPrefetch;
+    if (p && p.key === _rlKey(location) && Date.now() - p.at < RADAR_LOOP_CFG.PREFETCH_FRESH_MS) return p.meta;
+    return _rlFetchMeta();
+}
+
+// The tiles Leaflet will request for a map this size centred on the location —
+// same maths as L.GridLayer (floored pixel centre ± half size → floor/ceil tile range)
+function _rlTileRange(lat, lon, zoom, width, height) {
+    const n = Math.pow(2, zoom);
+    const s = Math.sin(lat * Math.PI / 180);
+    const px = Math.floor((lon + 180) / 360 * 256 * n);
+    const py = Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 256 * n);
+    const x0 = Math.floor((px - width / 2) / 256), x1 = Math.ceil((px + width / 2) / 256) - 1;
+    const y0 = Math.max(0, Math.floor((py - height / 2) / 256));
+    const y1 = Math.min(n - 1, Math.ceil((py + height / 2) / 256) - 1);
+    const tiles = [];
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) tiles.push({ x: ((x % n) + n) % n, y });
+    }
+    return tiles;
+}
+
+async function prefetchRadarLoop(location) {
+    if (!radarLoopCovers(location)) return;
+    const cfg = RADAR_LOOP_CFG;
+    const key = _rlKey(location);
+    if (_rlPrefetch && _rlPrefetch.key === key && Date.now() - _rlPrefetch.at < cfg.PREFETCH_FRESH_MS) return;
+    const entry = { key, at: Date.now(), meta: _rlFetchMeta(), images: [] };
+    _rlPrefetch = entry;
+    // On data saver only the (tiny) frame list is fetched ahead
+    if (typeof _isDataConstrained === 'function' && _isDataConstrained()) return;
+
+    const { newestObsMs, initMs } = await entry.meta;
+    if (_rlPrefetch !== entry) return;
+    // Size of the map the tab will open with (.radar-loop-map: 560px, max 65vh)
+    const box = document.querySelector('.satellite-card .satellite-container');
+    const width = box ? box.clientWidth : window.innerWidth;
+    const height = Math.min(560, Math.round(window.innerHeight * 0.65));
+    const frames = _rlBuildFrames(newestObsMs, initMs, false);
+    const now = frames.filter(f => f.kind === 'obs').length - 1;
+    // The basemap plus the frames _rlShow loads around "now" (now-1 … now+2)
+    const templates = [cfg.BASEMAP, ...frames.slice(Math.max(0, now - 1), now + 3).map(f => f.url)];
+    for (const tpl of templates) {
+        for (const { x, y } of _rlTileRange(location.lat, location.lon, cfg.ZOOM, width, height)) {
+            const img = new Image();
+            img.src = tpl.replace('{z}', cfg.ZOOM).replace('{x}', x).replace('{y}', y);
+            entry.images.push(img); // held so the page keeps the loaded tiles for Leaflet to reuse
+        }
+    }
+}
+
+function scheduleRadarLoopPrefetch(location) {
+    clearTimeout(_rlPrefetchTimer);
+    if (!radarLoopCovers(location)) return;
+    _rlPrefetchTimer = setTimeout(() => {
+        _rlPrefetchTimer = null;
+        prefetchRadarLoop(location);
+    }, RADAR_LOOP_CFG.PREFETCH_DELAY_MS);
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
 async function startRadarLoop(location, autoplay = false) {
@@ -126,7 +214,7 @@ async function startRadarLoop(location, autoplay = false) {
 
     // Keyless OSM tiles (fine for a small app under the OSM tile policy), darkened
     // by the .rl-basemap CSS filter to match the app; the radar layers stay unfiltered
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer(cfg.BASEMAP, {
         className: 'rl-basemap',
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors · Radar: NOAA via <a href="https://mesonet.agron.iastate.edu" target="_blank" rel="noopener">IEM</a>'
@@ -136,7 +224,7 @@ async function startRadarLoop(location, autoplay = false) {
     }).addTo(map);
 
     const lite = typeof _isDataConstrained === 'function' && _isDataConstrained();
-    const [newestObsMs, initMs] = await Promise.all([_rlNewestObsMs(), _rlHrrrInitMs()]);
+    const { newestObsMs, initMs } = await _rlMetaFor(location);
     if (gen !== _rlGen) return; // card re-rendered or location switched meanwhile
 
     _rlInitMs = initMs;
@@ -151,6 +239,9 @@ function stopRadarLoop() {
     _rlGen++;
     clearTimeout(_rlTimer);
     _rlTimer = null;
+    // A pending prefetch belongs to the card being torn down (or the old location)
+    clearTimeout(_rlPrefetchTimer);
+    _rlPrefetchTimer = null;
     _rlPlaying = false;
     _rlLoadWaits = 0;
     if (_rlMap) {
